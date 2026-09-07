@@ -1,0 +1,29 @@
+# NOTICE
+
+This project is a thin orchestration layer ("glue") that installs and wires
+together the following third-party components. Each component is fetched,
+built, or installed at setup time and remains governed by its own license:
+
+## Components
+
+| Component          | Role                                        | License       | Source |
+|--------------------|---------------------------------------------|---------------|--------|
+| llama.cpp          | GGUF inference on Adreno GPU (OpenCL)       | MIT           | https://github.com/ggml-org/llama.cpp |
+| Qualcomm GenieX    | LLM/VLM inference on Hexagon NPU            | BSD-3-Clause  | https://github.com/qualcomm/GenieX |
+| Open WebUI         | Chat web interface                          | BSD-3-Clause (branding clause) | https://github.com/open-webui/open-webui |
+| FastAPI / Starlette / uvicorn | Panel backend                      | BSD-3-Clause  | https://github.com/fastapi/fastapi |
+| httpx, websockets  | Panel proxy + WebSocket bridge              | BSD-3-Clause  | https://github.com/encode/httpx |
+| opencode           | Terminal coding agent (optional)           | MIT           | https://github.com/anomalyco/opencode |
+
+## Model weights
+
+Model weights downloaded through the provided scripts (GGUF files from
+Hugging Face, NPU bundles from Qualcomm AI Hub) are governed by their own
+licenses (e.g. Apache-2.0 for Qwen and gpt-oss models). Users are responsible
+for complying with each model's license terms.
+
+## Trademarks
+
+Snapdragon, Adreno, Hexagon, Oryon and Qualcomm are trademarks of Qualcomm
+Technologies, Inc. This project is not affiliated with or endorsed by
+Qualcomm Technologies, Inc.

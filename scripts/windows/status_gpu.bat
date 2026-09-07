@@ -1,0 +1,3 @@
+@echo off
+REM Show which model llama-server currently has loaded (port 8081)
+powershell -NoProfile -Command "try { $m = (Invoke-RestMethod http://localhost:8081/v1/models -TimeoutSec 3).models[0].name; if (-not $m) { $m = (Invoke-RestMethod http://localhost:8081/v1/models -TimeoutSec 3).data[0].id }; Write-Host ('Loaded: ' + $m) } catch { Write-Host 'Server not running on :8081' }; $p = Get-Process llama-server -ErrorAction SilentlyContinue; if ($p) { Write-Host ('PID: ' + $p.Id + '  Started: ' + $p.StartTime) }"

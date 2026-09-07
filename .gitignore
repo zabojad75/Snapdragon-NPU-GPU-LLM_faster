@@ -1,0 +1,28 @@
+# heavy local artifacts - never commit
+models/
+geniex/
+llama.cpp/
+pkg-opencl/
+downloads/
+logs/
+data/
+*.gguf
+*.exe
+*.dll
+*.so
+
+# runtime state
+openwebui-data/
+*.db
+*.log
+venv/
+.venv/
+__pycache__/
+*.pyc
+
+# secrets / personal
+*.pem
+*.key
+id_*
+*.pub
+token*
