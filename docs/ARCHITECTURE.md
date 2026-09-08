@@ -23,14 +23,14 @@
   OpenAI connections (`sk-dummy` key). Auth enabled — accounts live in
   `~/openwebui-data/webui.db`.
 - **Panel**: FastAPI app on `127.0.0.1:8188` inside the same venv.
-  `/panel` serves the toolbar; everything else is reverse-proxied to Open WebUI,
+  `/panel` serves the panel dashboard; everything else is reverse-proxied to Open WebUI,
   including WebSockets.
 
 ## Why a proxy at all?
 
 Open WebUI is served at `localhost:3000` and works standalone. The panel adds:
 
-1. **One URL** — toolbar + chat in one page, no port juggling.
+1. **One URL** — dashboard + chat in one page, no port juggling.
 2. **Server control** — start/stop/switch GPU & NPU servers, download models,
    quantize, pull NPU models — buttons instead of terminal.
 3. **Path fixes for free** — the webui's absolute assets (`/_app/...`) work

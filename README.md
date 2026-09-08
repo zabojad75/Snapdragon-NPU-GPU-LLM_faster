@@ -7,12 +7,12 @@ A complete local AI stack for **Windows 11 ARM64 on Snapdragon X / X2 Elite** (A
 - **Adreno GPU** via llama.cpp (OpenCL backend): up to **16K context**, any GGUF
 - **Hexagon NPU** via Qualcomm GenieX: power-efficient W4A16 models
 - **Open WebUI**: chat UI with web search, RAG, multi-user auth
-- **llmnpu Panel**: one page to start/stop servers, switch models, download GGUFs, quantize, pull NPU models
+- **llmnpu Panel**: a dashboard to start/stop servers, switch models, download GGUFs, quantize, pull NPU models
 - **opencode integration** (optional): terminal coding agent on the local GPU models
 
 ```
 ┌─────────────────────────── your browser ───────────────────────────┐
-│  http://localhost:8188/panel   (toolbar + embedded Open WebUI)      │
+│  http://localhost:8188/panel   (dashboard + embedded Open WebUI)    │
 └──────────┬───────────────────────────────┬──────────────────────────┘
            │ HTTP + WebSocket proxy        │
            ▼                               ▼
@@ -51,7 +51,7 @@ particular needs the RAM and disk headroom:
 
 ```bat
 REM 1. clone into your user folder
-git clone https://github.com/zabojad75/Snapdragon-NPU-GPU-LLM_optimization %USERPROFILE%\llmnpu
+git clone https://github.com/zabojad75/Snapdragon-NPU-GPU-LLM_faster %USERPROFILE%\llmnpu
 
 REM 2. one-time setup
 cd %USERPROFILE%\llmnpu
@@ -71,20 +71,28 @@ becomes admin.
 
 ## The panel
 
-`http://localhost:8188/panel` — toolbar on top, Open WebUI embedded below.
-One page, no terminal needed once installed: click a button, watch the
-status lights confirm each action.
+`http://localhost:8188/panel` — one page, no terminal needed once installed.
 
-- **▶ Start GPU / ■ Stop** — serve any GGUF from the models dir, with context size
-- **Model dropdown** — auto-scans `models/`, shows loaded model and file sizes
-- **NPU toggle** — start/stop the GenieX server
-- **⤓ Download** — paste any direct `.gguf` URL; resumable, auto-retry, uncapped
-- **⚙ Adapt** — re-quantize GGUFs (llama-quantize) or pull Hexagon-compiled NPU models (geniex pull)
-- **▤ Jobs** — live progress/logs for all running jobs
-- Status lights: GPU / NPU / WebUI, polled every 2 s
+![llmnpu Panel — dashboard](docs/panel-dashboard.png)
 
-The panel also transparently proxies **WebSockets** (socket.io) to Open WebUI —
-without this, chat streaming silently breaks behind the proxy (see
+Two switchable views behind a slim app bar (RAM free, WebUI status, dark/light
+theme toggle, clock):
+
+- **Chat** — Open WebUI embedded, for everyday conversations
+- **Dashboard** — a card grid to manage the stack:
+  - **GPU · Adreno** — start / switch / stop, model + context-size pickers with
+    a RAM-fit hint, live tokens/s, delete
+  - **NPU · Hexagon** — start / restart / stop, loaded / on-demand indicator
+  - **System** — RAM headroom bar and gateway info
+  - **Jobs** — running downloads / quantize / NPU pulls, with progress + cancel
+  - **Download** — paste any direct `.gguf` URL; resumable, auto-retry, uncapped
+  - **Adapt** — re-quantize GGUFs (llama-quantize) or pull NPU models (geniex pull)
+  - **Logs** — live GPU/NPU log tails + a context-budget checker
+
+Status chips (GPU/NPU) and RAM are polled every 2 s, and switching a model
+hot-swaps it in place (no manual stop needed). The panel also transparently
+proxies **WebSockets** (socket.io) to Open WebUI — without this, chat streaming
+silently breaks behind the proxy (see
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)).
 
 ## Docs

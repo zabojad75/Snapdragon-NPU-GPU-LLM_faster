@@ -29,7 +29,7 @@ working, but the scripts' gateway logic still functions (it's derived at runtime
 ## 2. Clone the repo
 
 ```bat
-git clone https://github.com/zabojad75/Snapdragon-NPU-GPU-LLM_optimization %USERPROFILE%\llmnpu
+git clone https://github.com/zabojad75/Snapdragon-NPU-GPU-LLM_faster %USERPROFILE%\llmnpu
 ```
 
 Copy it into WSL and run the WSL-side setup (creates venv, installs Open WebUI
@@ -106,7 +106,7 @@ Sizing guide (Adreno uses **shared system RAM**): Q4 quant ≈ 1 GB per 1B param
 ```
 
 Opens `http://localhost:8188/panel`. On the webui login screen, **sign up** —
-the first account becomes admin. Then pick a model in the panel toolbar → ▶ Start GPU.
+the first account becomes admin. Then pick a model in the panel dashboard (GPU card → Start).
 
 ## 7. Disable builtin tools for the NPU models (required)
 
