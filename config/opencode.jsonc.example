@@ -1,7 +1,7 @@
 // opencode provider config for the llmnpu stack.
 // Copy to ~/.config/opencode/opencode.jsonc and run scripts/wsl/fix_hostip.sh
 // (or start_all.bat) — it rewrites the gateway IP after every reboot.
-// The gateway IP below (172.x.x.1) is a placeholder: NAT-mode WSL gets a new
+// Replace <gateway-ip> with the WSL NAT gateway (ip route show default): NAT-mode WSL gets a new
 // one at each boot. Windows-side tools use localhost:8081 instead.
 {
   "$schema": "https://opencode.ai/config.json",
