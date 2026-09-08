@@ -1,0 +1,157 @@
+<header class="appbar">
+  <span class="brand">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">
+      <path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/>
+    </svg>
+    llmnpu
+  </span>
+  <nav class="viewswitch">
+    <button id="btnChat" class="active">Chat</button>
+    <button id="btnDash">Dashboard</button>
+  </nav>
+  <span class="grow"></span>
+  <span class="label">RAM</span>
+  <span class="bar" id="ramBarMini" style="width:110px"><div id="ramBarMiniFill"></div></span>
+  <span class="mono" id="ramInfo">–</span>
+  <span class="label"><span class="dot" id="dWeb"></span>WebUI</span>
+  <button class="btn ghost" id="themeBtn" aria-label="Toggle theme" title="Toggle theme">
+    <svg id="iconSun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+      <circle cx="12" cy="12" r="5"/>
+      <line x1="12" y1="1" x2="12" y2="3"/>
+      <line x1="12" y1="21" x2="12" y2="23"/>
+      <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
+      <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+      <line x1="1" y1="12" x2="3" y2="12"/>
+      <line x1="21" y1="12" x2="23" y2="12"/>
+      <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
+      <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+    </svg>
+    <svg id="iconMoon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+      <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+    </svg>
+  </button>
+  <span class="mono" id="clock">–</span>
+</header>
+<main>
+  <section id="view-chat">
+    <iframe id="webui" src="/" title="Open WebUI"></iframe>
+  </section>
+  <section id="view-dash" class="hidden">
+    <div class="grid">
+      <div class="card" id="cardGpu">
+        <div class="card-head">
+          <span class="card-title">GPU · Adreno</span>
+          <span class="chip" id="gpuChip">–</span>
+        </div>
+        <div class="row">
+          <select id="model" class="mono"></select>
+        </div>
+        <div class="row">
+          <span class="label">context</span>
+          <select id="ctx">
+            <option value="4096">4096</option>
+            <option value="8192">8192</option>
+            <option value="16384" selected>16384</option>
+            <option value="24576">24576</option>
+            <option value="32768">32768</option>
+          </select>
+          <span class="label" id="ctxHint"></span>
+        </div>
+        <div class="row">
+          <button id="btnStart" class="btn primary">Start</button>
+          <button id="btnGpuRestart" class="btn">Restart</button>
+          <button id="btnStop" class="btn danger">Stop</button>
+          <button id="btnDel" class="btn danger">Delete</button>
+        </div>
+        <div class="label mono" id="gpuDetail">–</div>
+      </div>
+      <div class="card" id="cardNpu">
+        <div class="card-head">
+          <span class="card-title">NPU · Hexagon</span>
+          <span class="chip" id="npuChip">–</span>
+        </div>
+        <div class="row">
+          <button id="btnNpuStart" class="btn primary">Start</button>
+          <button id="btnNpuRestart" class="btn">Restart</button>
+          <button id="btnNpuStop" class="btn danger">Stop</button>
+        </div>
+        <div class="label mono" id="npuDetail">–</div>
+      </div>
+      <div class="card" id="cardSys">
+        <div class="card-head">
+          <span class="card-title">System</span>
+        </div>
+        <div class="row">
+          <span class="label">RAM free</span>
+          <div class="bar" id="ramBar"><div id="ramBarFill"></div></div>
+          <div class="label mono" id="ramFreeText">–</div>
+        </div>
+        <div class="label mono" id="gwInfo">–</div>
+      </div>
+      <div class="card" id="cardJobs">
+        <div class="card-head">
+          <span class="card-title">Jobs</span>
+        </div>
+        <div id="jobsList"><span class="label">none yet</span></div>
+      </div>
+      <div class="card" id="cardDl">
+        <div class="card-head">
+          <span class="card-title">Download GGUF</span>
+        </div>
+        <div class="row">
+          <input type="text" id="dlUrl" placeholder="https://huggingface.co/.../model-Q4_K_M.gguf">
+          <button class="btn primary" id="btnDl">Download</button>
+        </div>
+        <div class="row">
+          <span class="label">On disk</span>
+          <div id="modelsList" class="label mono"></div>
+        </div>
+      </div>
+      <div class="card" id="cardAdapt">
+        <div class="card-head">
+          <span class="card-title">Adapt</span>
+        </div>
+        <div class="row">
+          <span class="label">Re-quantize a GGUF (llama-quantize)</span>
+        </div>
+        <div class="row">
+          <select id="qModel"></select>
+          <span class="label">→</span>
+          <select id="qTarget"></select>
+          <button class="btn primary" id="btnQuantize">Quantize</button>
+        </div>
+        <div class="row">
+          <span class="label">Pull a Hexagon-compiled model (geniex)</span>
+        </div>
+        <div class="row">
+          <input type="text" id="npRepo" placeholder="qualcomm/Qwen3-8B:W4A16">
+          <button class="btn primary" id="btnNpuPull">Pull</button>
+        </div>
+      </div>
+      <div class="card" id="cardLogs">
+        <div class="card-head">
+          <span class="card-title">Logs & context budget</span>
+        </div>
+        <div class="row">
+          <span class="label">GPU</span>
+          <pre id="gpuLog"></pre>
+        </div>
+        <div class="row">
+          <span class="label">NPU</span>
+          <pre id="npuLog"></pre>
+        </div>
+        <div class="row">
+          <span class="label">Context budget check (NPU 4K · GPU 16K)</span>
+        </div>
+        <div class="row">
+          <textarea id="budgetText" placeholder="paste your task text here…"></textarea>
+        </div>
+        <div class="row">
+          <button class="btn primary" id="btnBudget">Check</button>
+          <span class="label" id="budgetOut">estimate tokens (≈ chars ÷ 4)</span>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+<div id="toast" role="status"></div>

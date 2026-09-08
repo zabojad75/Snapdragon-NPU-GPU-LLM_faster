@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>llmnpu Panel</title>
+<style>
+  :root{
+    --bg:#0b0e14; --panel:#131824; --panel2:#1a2130; --line:#26304a;
+    --txt:#dce3f2; --dim:#8a94ab; --acc:#4f8cff; --ok:#2fbf71; --warn:#e8b04b; --err:#e05260;
+  }
+  *{box-sizing:border-box; font-family:"Segoe UI",system-ui,sans-serif}
+  html,body{height:100%; margin:0; background:var(--bg); color:var(--txt); overflow:hidden}
+  header{
+    display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+    padding:8px 12px; background:var(--panel); border-bottom:2px solid var(--line);
+  }
+  .brand{font-weight:700; font-size:15px; color:var(--acc); margin-right:4px; white-space:nowrap}
+  button{
+    background:var(--panel2); color:var(--txt); border:1px solid var(--line);
+    border-radius:6px; padding:6px 12px; cursor:pointer; font-size:13px;
+  }
+  button:hover{border-color:var(--acc)}
+  button:disabled{opacity:.45; cursor:not-allowed}
+  button.primary{background:var(--acc); color:#fff; border-color:var(--acc)}
+  button.danger{background:#3a1520; border-color:#6e2536; color:#ffb3bd}
+  select,input[type=text],input[type=number]{
+    background:var(--panel2); color:var(--txt); border:1px solid var(--line);
+    border-radius:6px; padding:6px 8px; font-size:13px;
+  }
+  select{max-width:280px}
+  .sep{width:1px; height:26px; background:var(--line)}
+  .light{display:inline-flex; align-items:center; gap:5px; font-size:12px; color:var(--dim); white-space:nowrap}
+  .dot{width:9px; height:9px; border-radius:50%; background:#555; display:inline-block}
+  .dot.on{background:var(--ok); box-shadow:0 0 6px var(--ok)}
+  .dot.err{background:var(--err)}
+  .dot.warn{background:var(--warn); box-shadow:0 0 6px var(--warn)}
+  .dot.busy{background:var(--acc); box-shadow:0 0 6px var(--acc); animation:pulse 1.2s infinite}
+  .dot.starting{background:var(--warn); animation:pulse 1s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+  .chip{font-size:11px; padding:1px 7px; border-radius:9px; border:1px solid var(--line); color:var(--dim); white-space:nowrap}
+  .chip.off{color:#6b7280}
+  .chip.ready{color:var(--ok); border-color:var(--ok)}
+  .chip.busy{color:var(--acc); border-color:var(--acc)}
+  .chip.starting{color:var(--warn); border-color:var(--warn)}
+  .chip.crashed{color:var(--err); border-color:var(--err); font-weight:700}
+  .chip.stopping{color:var(--warn); border-color:var(--warn)}
+  #ctx.ok{border-color:var(--ok); color:var(--ok)}
+  #ctx.warn{border-color:var(--warn); color:var(--warn)}
+  #ctx.err{border-color:var(--err); color:var(--err)}
+  #ctxHint{font-size:11px; white-space:nowrap}
+  #ctxHint.ok{color:var(--ok)} #ctxHint.warn{color:var(--warn)} #ctxHint.err{color:var(--err)}
+  .lane{display:inline-flex; align-items:center; gap:6px; flex-wrap:wrap}
+  .lane .lbl{font-size:11px; color:var(--dim); font-weight:700; letter-spacing:.4px}
+  .grow{flex:1}
+  #model{min-width:220px}
+  .label{font-size:11px; color:var(--dim)}
+  .ram{font-size:11px; color:var(--dim); white-space:nowrap}
+  .ram.warn{color:var(--warn)}
+  .ram.err{color:var(--err)}
+  #sheet{
+    position:fixed; left:0; right:0; top:52px; bottom:0; display:none;
+    background:rgba(5,8,14,.92); z-index:50; padding:16px; overflow:auto;
+  }
+  #sheet h3{margin:2px 0 10px; color:var(--acc)}
+  #sheet .box{background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px; margin-bottom:12px; max-width:760px}
+  #sheet pre{
+    background:#0a0d15; border:1px solid var(--line); border-radius:6px;
+    padding:8px; font-size:11.5px; max-height:220px; overflow:auto; color:#9fb4d8; white-space:pre-wrap;
+  }
+  .row{display:flex; gap:8px; align-items:center; margin:6px 0; flex-wrap:wrap}
+  iframe{position:fixed; left:0; right:0; top:52px; bottom:0; width:100%; height:calc(100% - 52px); border:0; background:#fff}
+  #toast{
+    position:fixed; bottom:14px; right:14px; background:var(--panel); border:1px solid var(--acc);
+    border-radius:8px; padding:10px 14px; font-size:13px; display:none; z-index:99; max-width:420px;
+  }
+  .job{border-left:3px solid var(--acc); padding:6px 10px; margin:6px 0; background:var(--panel2); border-radius:0 6px 6px 0}
+  .job.done{border-color:var(--ok)} .job.error{border-color:var(--err)}
+  .bar{height:8px; background:#0a0d15; border-radius:4px; overflow:hidden; margin:4px 0}
+  .bar>div{height:100%; background:var(--acc); width:0%}
+  .hint{color:var(--dim); font-size:12px}
+</style>
+</head>
+<body>
+<header>
+  <span class="brand">⚡ llmnpu</span>
+
+  <span class="lane">
+    <span class="lbl">GPU</span>
+    <button id="btnStart" class="primary" onclick="gpuStart()">▶ Start</button>
+    <button id="btnStop" class="danger" onclick="gpuStop()">■ Stop</button>
+    <button id="btnGpuRestart" onclick="gpuRestart()" title="Restart the loaded model">⟲</button>
+    <select id="model" onchange="saveSel()"></select>
+    <button id="btnDel" class="danger" onclick="modelDelete()" title="Delete the selected .gguf from disk">🗑</button>
+    <span class="label">ctx</span>
+    <select id="ctx" onchange="ctxChanged()">
+      <option>4096</option><option>8192</option>
+      <option selected>16384</option><option>24576</option><option>32768</option>
+    </select>
+    <span id="ctxHint"></span>
+    <span class="chip" id="gpuChip">–</span>
+  </span>
+
+  <span class="sep"></span>
+
+  <span class="lane">
+    <span class="lbl">NPU</span>
+    <button id="btnNpuStart" class="primary" onclick="npuStart()">▶ Start</button>
+    <button id="btnNpuStop" class="danger" onclick="npuStop()">■ Stop</button>
+    <button id="btnNpuRestart" onclick="npuRestart()" title="Restart the NPU server">⟲</button>
+    <span class="chip" id="npuChip">–</span>
+  </span>
+
+  <span class="sep"></span>
+  <button onclick="openSheet('servers')">▤ Servers</button>
+  <button onclick="openSheet('dl')">⤓ Download</button>
+  <button onclick="openSheet('adapt')">⚙ Adapt</button>
+  <button onclick="openSheet('jobs')">▤ Jobs</button>
+
+  <span class="grow"></span>
+  <span class="ram" id="ramInfo">–</span>
+  <span class="light"><span id="dWeb" class="dot"></span>WebUI</span>
+  <span class="light" id="clock"></span>
+</header>
+
+<iframe id="webui" src="/"></iframe>
+
+<div id="sheet"></div>
+<div id="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+let S = null;              // last status
+let sheet = null;          // open sheet name
+
+function toast(msg, ms=3500){ $('toast').innerHTML=msg; $('toast').style.display='block';
+  setTimeout(()=> $('toast').style.display='none', ms); }
+
+async function api(path, opts){
+  const r = await fetch('/api'+path, opts);
+  const t = await r.text();
+  let d; try{ d = JSON.parse(t) }catch{ throw new Error(t) }
+  if(!r.ok) throw new Error(d.detail||t);
+  return d;
+}
+
+// ---------- polling
+const ST = {off:'off', starting:'starting', ready:'ready', busy:'busy',
+            stopping:'stopping', crashed:'crashed'};
+let lastState = {gpu:'?', npu:'?'};
+let lastReflected = null;   // last model the poll auto-pinned (don't fight user selection)
+let lastRamSeen = null;
+
+function chip(el, state, label){
+  el.className = 'chip ' + state;
+  el.textContent = label;
+}
+function age(ts){ const s = Math.max(0, Math.floor((Date.now()/1000) - ts));
+  return s<60 ? s+'s' : Math.floor(s/60)+'m'; }
+
+async function poll(){
+  try{ S = await api('/status'); }catch{ return; }
+  const g = S.gpu, n = S.npu;
+  // GPU chip
+  let gl = g.state;
+  if(g.state==='ready') gl = g.model? g.model.split('/').pop().slice(0,22) : 'ready';
+  if(g.state==='busy')  gl = (g.model? g.model.split('/').pop().slice(0,14)+' · ' : '') + (g.toks? g.toks.toFixed(0)+' t/s' : 'busy');
+  if(g.state==='starting') gl = 'starting… ' + age(g.since);
+  if(g.state==='stopping') gl = 'stopping…';
+  if(g.state==='crashed') gl = 'CRASHED';
+  chip($('gpuChip'), g.state, gl);
+  // NPU chip
+  let nl = n.state;
+  if(n.state==='ready') nl = 'ready';
+  if(n.state==='busy')  nl = n.detail==='busy · health slow' ? 'busy · health slow' : 'generating…';
+  if(n.state==='starting') nl = 'starting… ' + age(n.since);
+  if(n.state==='stopping') nl = 'stopping…';
+  if(n.state==='crashed') nl = 'CRASHED';
+  chip($('npuChip'), n.state, nl);
+  // webui + ram
+  $('dWeb').className = 'dot' + (S.webui? ' on':' err');
+  const ram = $('ramInfo');
+  if(S.ram_free!=null){ ram.textContent = 'RAM ' + S.ram_free.toFixed(1) + ' GB free';
+    ram.className = 'ram' + (S.ram_free<6? ' err' : S.ram_free<12? ' warn' : ''); }
+  $('clock').textContent = S.now;
+  // model dropdown = files on disk (with partial %)
+  const sel = $('model');
+  const cur = sel.value;
+  const have = new Set([...sel.options].map(o=>o.value));
+  const want = S.models.map(m=>m.name);
+  if(JSON.stringify(want)!=JSON.stringify(have)){
+    sel.innerHTML = '';
+    for(const m of S.models){
+      const o = document.createElement('option');
+      let txt = `${m.name} (${(m.size/1e9).toFixed(1)} GB)`;
+      if(m.expected && m.size < m.expected) txt += ` ▮${(100*m.size/m.expected).toFixed(0)}%`;
+      o.value = m.name; o.textContent = txt;
+      sel.appendChild(o);
+    }
+    if(want.includes(cur)) sel.value = cur;
+  }
+  // reflect loaded model in dropdown ONLY when it changes — otherwise this
+  // runs every 2 s poll and snaps the user's manual selection right back
+  if(g.model && g.model !== lastReflected){
+    for(const o of sel.options) if(o.value.startsWith(g.model)||o.value.includes(g.model)) { sel.value=o.value; break; }
+    lastReflected = g.model;
+  }
+  // keep ctx estimate in sync with current selection + RAM
+  const estKey = sel.value + '@' + $('ctx').value;
+  if(estKey !== lastEstKey || (S.ram_free!=null && lastRamSeen !== S.ram_free)) { lastRamSeen = S.ram_free; ctxChanged(); }
+  // button state machine
+  // Start doubles as Switch: /gpu/start hot-swaps (kill+reload) when running
+  const gpuLive = (g.state==='ready'||g.state==='busy');
+  $('btnStart').disabled = (g.state==='starting'||g.state==='stopping');
+  $('btnStart').textContent = gpuLive ? '⇄ Switch' : '▶ Start';
+  $('btnStop').disabled  = !(g.state==='ready'||g.state==='busy'||g.state==='starting');
+  $('btnGpuRestart').disabled = !(g.state==='ready'||g.state==='busy'||g.state==='crashed');
+  $('btnNpuStart').disabled = !(n.state==='off'||n.state==='crashed');
+  $('btnNpuStop').disabled  = !(n.state==='ready'||n.state==='busy'||n.state==='starting');
+  $('btnNpuRestart').disabled = !(n.state==='ready'||n.state==='busy'||n.state==='crashed');
+  // transition toasts
+  if(lastState.gpu!=='?' && lastState.gpu!==g.state){
+    if(g.state==='crashed') toast('⚠ GPU server crashed — check ▤ Servers', 6000);
+    if(g.state==='ready') toast('GPU ready: ' + (g.model||''), 3000);
+  }
+  if(lastState.npu!=='?' && lastState.npu!==n.state){
+    if(n.state==='crashed') toast('⚠ NPU server crashed — check ▤ Servers', 6000);
+    if(n.state==='ready') toast('NPU ready', 3000);
+  }
+  lastState.gpu = g.state; lastState.npu = n.state;
+  if(sheet) renderSheet();
+}
+setInterval(poll, 2000); poll();
+
+// ---------- GPU
+async function gpuStart(){
+  const model = $('model').value, ctx = $('ctx').value;
+  if(!model) return toast('no model selected');
+  toast('loading '+model+' …');
+  try{ await api('/gpu/start?model='+encodeURIComponent(model)+'&ctx='+ctx);
+       toast('GPU starting — model loads ~15-60 s'); }
+  catch(e){ toast('ERR '+e.message, 6000); }
+}
+async function gpuStop(){ try{ await api('/gpu/stop'); toast('GPU stopping…'); }catch(e){ toast('ERR '+e.message) } }
+async function gpuRestart(){
+  const model = $('model').value;
+  try{ await api('/gpu/restart?model='+encodeURIComponent(model));
+       toast('GPU restarting…'); }
+  catch(e){ toast('ERR '+e.message, 6000); }
+}
+async function modelDelete(){
+  const model = $('model').value;
+  if(!model) return toast('no model selected');
+  const info = (S.models||[]).find(m=>m.name===model);
+  const size = info? ` (${(info.size/1e9).toFixed(2)} GB)` : '';
+  if(!confirm(`Delete ${model}${size} from disk?\nThis cannot be undone.`)) return;
+  try{ const d = await api('/models/delete?model='+encodeURIComponent(model));
+       toast('deleted '+d.deleted); }
+  catch(e){ toast('ERR '+e.message, 6000); }
+}
+async function npuStart(){ try{ await api('/npu/start'); toast('NPU starting…'); }catch(e){ toast('ERR '+e.message) } }
+async function npuStop(){ try{ await api('/npu/stop'); toast('NPU stopping…'); }catch(e){ toast('ERR '+e.message) } }
+async function npuRestart(){ try{ await api('/npu/restart'); toast('NPU restarting…'); }catch(e){ toast('ERR '+e.message) } }
+
+// ---------- sheets
+function openSheet(name){ sheet = name; $('sheet').style.display='block'; renderSheet(); }
+function closeSheet(){ sheet = null; $('sheet').style.display='none'; }
+
+function esc(s){ return (s||'').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])) }
+
+function renderSheet(){
+  const el = $('sheet');
+  const back = `<button onclick="closeSheet()">✕ close</button> <span class="hint">polling live</span>`;
+  if(sheet==='servers'){
+    const g = S.gpu, n = S.npu;
+    const gLog = (g.log_tail||[]).map(l=>esc(l)).join('\n');
+    const nLog = (n.log_tail||[]).map(l=>esc(l)).join('\n');
+    el.innerHTML = `<h3>▤ Servers</h3>${back}
+      <div class="box">
+        <div class="label">GPU — ${esc(g.state)}${g.model? ' · '+esc(g.model):''}${g.toks? ' · '+g.toks.toFixed(0)+' t/s':''}</div>
+        <pre>${gLog||'<span class="hint">no log yet</span>'}</pre>
+      </div>
+      <div class="box">
+        <div class="label">NPU — ${esc(n.state)}${n.loaded? ' · model loaded':' · on-demand'}</div>
+        <pre>${nLog||'<span class="hint">no log yet</span>'}</pre>
+      </div>
+      <div class="box">
+        <div class="label">Context budget check (NPU = 4K ctx, GPU = 16K)</div>
+        <div class="row">
+          <input type="text" id="budgetText" style="min-width:420px" placeholder="paste your task text here…">
+          <button class="primary" onclick="budgetCheck()">check</button>
+        </div>
+        <div id="budgetOut" class="hint">estimate tokens (≈ chars ÷ 4) vs each lane's budget.</div>
+      </div>`;
+  }
+  else if(sheet==='dl'){
+    const jobs = (S.jobs||[]).filter(j=>j.kind==='download');
+    const models = (S.models||[]).map(m=>
+      `<div class="row"><span style="min-width:260px">${esc(m.name)}</span><span class="hint">${(m.size/1e9).toFixed(2)} GB</span></div>`).join('');
+    const j = jobs.map(x=>{
+      // parse last curl progress line:  " 12 3.4G  12 500M 0 0 15.2M 0  0:01:02 0:03:12 40.5M"
+      let bar = '', pct = '';
+      const m = (x.log||[]).reverse().find(l=>/\d+(\.\d+)?[kMG]?\s+\d+(\.\d+)?[kMG]/.test(l));
+      if(m){
+        const done = m.match(/(\d+(\.\d+)?[kMG]?)/g);
+        const total = m.match(/\s(\d+(\.\d+)?[kMG])\s/);
+        const speed = m.match(/(\d+(\.\d+)?[kMG])\s+\d+:\d+:\d+/);
+        if(done&&total) pct = `${done[0]} / ${total[1]}`;
+        if(speed) pct += ` @ ${speed[1]}/s`;
+      }
+      return `<div class="job ${x.status}"><b>${esc(x.label)}</b> — ${x.status} (${x.elapsed}s) ${pct}
+      <pre>${esc((x.log||[]).slice(-4).join('\n'))}</pre>
+      ${x.status==='running'?`<button onclick="cancelJob('${x.id}')">cancel</button>`:''}</div>`;
+    }).join('');
+    el.innerHTML = `<h3>⤓ Download GGUF</h3>${back}
+      <div class="box">
+        <div class="row"><input type="text" id="dlUrl" style="min-width:420px" placeholder="https://huggingface.co/.../model-Q4_K_M.gguf"></div>
+        <div class="row"><button class="primary" onclick="doDownload()">start download</button>
+        <span class="hint">direct .gguf URL — resumable, auto-retry, uncapped</span></div>
+        ${j}
+        <h3>On disk</h3>${models}
+      </div>`;
+  }
+  else if(sheet==='adapt'){
+    const models = (S.models||[]).map(m=>`<option>${esc(m.name)}</option>`).join('');
+    const q = QUANTS.map(x=>`<option>${x}</option>`).join('');
+    const jobs = (S.jobs||[]).filter(j=>j.kind==='quantize'||j.kind==='npull');
+    const j = jobs.map(x=>`<div class="job ${x.status}"><b>${esc(x.label)}</b> — ${x.status} (${x.elapsed}s)
+      <pre>${esc((x.log||[]).slice(-8).join('\n'))}</pre>
+      ${x.status==='running'?`<button onclick="cancelJob('${x.id}')">cancel</button>`:''}</div>`).join('');
+    el.innerHTML = `<h3>⚙ Adapt models</h3>${back}
+      <div class="box">
+        <div class="label">GPU — re-quantize a GGUF (llama-quantize)</div>
+        <div class="row">
+          <select id="qModel">${models}</select>
+          <span class="label">→</span>
+          <select id="qTarget">${q}</select>
+          <button class="primary" onclick="doQuantize()">quantize</button>
+        </div>
+        <div class="hint">needs an F16/BF16 (unquantized) source GGUF — llama-quantize refuses re-quantizing an already-quantized file. Download the F16 variant, then quantize it down to Q4_0/Q4_K_M for the GPU.</div>
+      </div>
+      <div class="box">
+        <div class="label">NPU — pull a Hexagon-compiled model (geniex pull)</div>
+        <div class="row">
+          <input type="text" id="npRepo" placeholder="qualcomm/Qwen3-8B:W4A16" style="min-width:260px">
+          <button class="primary" onclick="doNpuPull()">pull</button>
+        </div>
+        <div class="hint">org/name from HuggingFace or Qualcomm AI Hub; append :W4A16 for a precision; ~GB-sized, metered-safe? no — full speed now</div>
+      </div>
+      ${j? `<div class="box"><div class="label">running/recent</div>${j}</div>`:''}`;
+  }
+  else if(sheet==='jobs'){
+    const j = (S.jobs||[]).map(x=>`<div class="job ${x.status}"><b>${esc(x.label)}</b> — ${x.status} (${x.elapsed}s)
+      <pre>${esc((x.log||[]).slice(-10).join('\n'))}</pre>
+      ${x.status==='running'?`<button onclick="cancelJob('${x.id}')">cancel</button>`:''}</div>`).join('');
+    el.innerHTML = `<h3>▤ Jobs</h3>${back}<div class="box">${j||'<span class="hint">none yet</span>'}</div>`;
+  }
+}
+
+const QUANTS = ["Q4_0","Q4_1","Q5_0","Q5_1","Q8_0","Q3_K_M","Q4_K_M","Q5_K_M","Q6_K","IQ4_XS"];
+
+async function doDownload(){
+  const url = $('dlUrl').value.trim();
+  if(!url) return toast('paste a URL first');
+  try{ const d = await api('/download?url='+encodeURIComponent(url));
+       toast('download started: '+d.file); }
+  catch(e){ toast('ERR '+e.message, 6000); }
+}
+async function doQuantize(){
+  const model = $('qModel').value, quant = $('qTarget').value;
+  try{ const d = await api('/quantize?model='+encodeURIComponent(model)+'&quant='+quant);
+       toast('quantize started → '+d.out); }
+  catch(e){ toast('ERR '+e.message, 6000); }
+}
+async function doNpuPull(){
+  const repo = $('npRepo').value.trim();
+  if(!repo) return toast('enter org/name');
+  try{ const d = await api('/npu/pull?repo='+encodeURIComponent(repo));
+       toast('NPU pull started'); }
+  catch(e){ toast('ERR '+e.message, 6000); }
+}
+async function cancelJob(id){ try{ await api('/jobs/'+id+'/cancel', {method:'POST'}); toast('cancelled'); }catch(e){ toast(e.message) } }
+
+function budgetCheck(){
+  const t = ($('budgetText').value||'').trim();
+  if(!t) return toast('paste some text first');
+  const est = Math.round(t.length/4);
+  const out = $('budgetOut');
+  const npu = est <= 3000 ? '✓ fits NPU' : '✗ exceeds NPU (4K)';
+  const gpu = est <= 12000 ? '✓ fits GPU' : '✗ exceeds GPU (16K)';
+  out.innerHTML = `~${est} tokens → <b>${npu}</b> · <b>${gpu}</b>`;
+}
+
+function saveSel(){ localStorage.setItem('lastModel', $('model').value); ctxChanged(); }
+
+// ---------- ctx RAM fit check (green / orange / red)
+let lastEstKey = '';
+async function ctxChanged(){
+  const model = $('model').value, ctx = $('ctx').value;
+  if(!model) return;
+  const key = model + '@' + ctx;
+  if(key === lastEstKey) return;
+  lastEstKey = key;
+  const sel = $('ctx'), hint = $('ctxHint');
+  try{
+    const e = await api('/ctx/estimate?model='+encodeURIComponent(model)+'&ctx='+ctx);
+    if(e.need_gb == null){ sel.className=''; hint.className=''; hint.textContent='~'; return; }
+    const free = (S && S.ram_free!=null) ? S.ram_free : null;
+    let cls, txt;
+    if(free == null){ cls=''; txt = `needs ~${e.need_gb} GB`; }
+    else {
+      const head = free - e.need_gb;   // vs RAM free right now
+      const gpuHolds = (S.gpu.state==='ready'||S.gpu.state==='busy'); // current model still in RAM
+      const avail = gpuHolds ? free + (S.gpu_ram||0) : free;          // swap frees the old one
+      const margin = avail - e.need_gb;
+      if(margin < 1.5){ cls='err'; txt = `✗ needs ~${e.need_gb} GB — will not fit (free ${free.toFixed(0)}, swap frees ${(S.gpu_ram||0)>0? '~'+S.gpu_ram.toFixed(0)+' GB':''})`; }
+      else if(margin < 6){ cls='warn'; txt = `▲ needs ~${e.need_gb} GB — tight, ~${margin.toFixed(0)} GB left`; }
+      else { cls='ok'; txt = `✓ needs ~${e.need_gb} GB — fits`; }
+    }
+    sel.className = cls; hint.className = cls; hint.textContent = txt;
+  }catch(e){ sel.className=''; hint.textContent=''; }
+}
+</script>
+</body>
+</html>

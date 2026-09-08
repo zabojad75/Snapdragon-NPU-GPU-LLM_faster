@@ -1,0 +1,36 @@
+// opencode provider config for the llmnpu stack.
+// Copy to ~/.config/opencode/opencode.jsonc and run scripts/wsl/fix_hostip.sh
+// (or start_all.bat) — it rewrites the gateway IP after every reboot.
+// The gateway IP below (172.x.x.1) is a placeholder: NAT-mode WSL gets a new
+// one at each boot. Windows-side tools use localhost:8081 instead.
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "llamacpp": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "llama.cpp GPU (Adreno)",
+      "options": {
+        "baseURL": "http://<gateway-ip>:8081/v1"
+      },
+      "models": {
+        "qwen3-coder-30b": { "name": "Qwen3 Coder 30B MoE (Adreno GPU, Q4_0) — flagship coder" },
+        "gpt-oss-20b":    { "name": "GPT-OSS 20B MoE (Adreno GPU, Q4_0)" },
+        "qwen3-8b":       { "name": "Qwen3 8B (Adreno GPU, Q5_0)" },
+        "mistral-nemo-12b": { "name": "Mistral Nemo 12B (Adreno GPU, Q4_0)" },
+        "qwen2.5-coder-1.5b": { "name": "Qwen2.5 Coder 1.5B (Adreno GPU, Q4_0)" }
+      }
+    },
+    "geniex-npu": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "GenieX NPU (Hexagon) — short prompts only",
+      "options": {
+        "baseURL": "http://<gateway-ip>:18181/v1"
+      },
+      "models": {
+        "NPU/Qwen3-8B:W4A16":      { "name": "Qwen3 8B (NPU, 4K ctx — NOT for opencode)" },
+        "NPU/Gemma-4-E4B-it:W4A16": { "name": "Gemma 4 E4B (NPU, 4K ctx — NOT for opencode)" },
+        "NPU/Qwen3-0.6B:W4A16":    { "name": "Qwen3 0.6B (NPU, 4K ctx — NOT for opencode)" }
+      }
+    }
+  }
+}
