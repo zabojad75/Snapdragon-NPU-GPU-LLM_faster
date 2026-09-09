@@ -4,7 +4,7 @@
 
 A complete local AI stack for **Windows 11 ARM64 on Snapdragon X / X2 Elite** (Adreno GPU + Hexagon NPU), controlled from a single web panel:
 
-- **Adreno GPU** via llama.cpp (OpenCL backend): up to **16K context**, any GGUF
+- **Adreno GPU** via llama.cpp (OpenCL backend): selectable context **4K–64K** (16K default), any GGUF
 - **Hexagon NPU** via Qualcomm GenieX: power-efficient W4A16 models
 - **Open WebUI**: chat UI with web search, RAG, multi-user auth
 - **llmnpu Panel**: a dashboard to start/stop servers, switch models, download GGUFs, quantize, pull NPU models
@@ -25,13 +25,20 @@ A complete local AI stack for **Windows 11 ARM64 on Snapdragon X / X2 Elite** (A
 
 ## Measured performance (Snapdragon X2 Elite, 48 GB, Adreno GPU, OpenCL)
 
-| Model | Type | Quant | tok/s (generation) | Context |
-|-------|------|-------|--------------------|---------|
+| Model | Type | Quant | tok/s (generation) | Tested ctx |
+|-------|------|-------|--------------------|------------|
 | **Qwen3-Coder-30B-A3B** | MoE 3B-active | Q4_0 | **~31** | 16K |
 | GPT-OSS-20B | MoE | Q4_0 | ~26 | 16K |
 | Qwen3-8B | dense | Q5_0 | ~22 | 16K |
 | Mistral-Nemo-12B | dense | Q4_0 | ~17 | 16K |
 | Qwen2.5-Coder-1.5B | dense | Q4_0 | ~90 | 16K |
+
+All numbers measured at 16K context. The panel's GPU card offers a context
+picker (4K / 8K / 16K / 24K / 32K / **64K**) with a live RAM-fit hint — larger
+contexts work but cost KV-cache RAM (see `/api/ctx/estimate`), so 64K is
+realistic for the smaller models / large-RAM machines, while the 30B is happiest
+at 16K. `serve_gpu.bat` takes the same choice from the terminal:
+`serve_gpu.bat 30b 32768` (model key, then context size).
 
 The 30B MoE is the sweet spot: only ~3B parameters activate per token, so it's
 **faster** than the dense 8B while being the strongest coder of the set.
@@ -80,8 +87,8 @@ theme toggle, clock):
 
 - **Chat** — Open WebUI embedded, for everyday conversations
 - **Dashboard** — a card grid to manage the stack:
-  - **GPU · Adreno** — start / switch / stop, model + context-size pickers with
-    a RAM-fit hint, live tokens/s, delete
+  - **GPU · Adreno** — start / switch / stop, model + context-size pickers
+    (4K–64K, 16K default) with a RAM-fit hint, live tokens/s, delete
   - **NPU · Hexagon** — start / restart / stop, loaded / on-demand indicator
   - **System** — RAM headroom bar and gateway info
   - **Jobs** — running downloads / quantize / NPU pulls, with progress + cancel
@@ -114,7 +121,8 @@ silently breaks behind the proxy (see
 ## Known limits (honest engineering)
 
 - **One GPU model at a time** — Adreno shared memory holds one model; switching = reload (~15–60 s)
-- **16K context** is the practical ceiling at 32 GB RAM with the 30B model
+- **16K context** is the practical default at 32 GB RAM with the 30B model —
+  up to 64K is selectable, but check the RAM-fit hint (KV cache grows with ctx)
 - **NPU models are context-locked at 4096** by GenieX — fine for chat, unusable for agentic coding
 - **`localhost` never works WSL→Windows** in NAT mode — always the gateway IP (scripts handle this)
 - llama-quantize refuses re-quantizing already-quantized GGUFs — start from F16/BF16 sources
