@@ -2,9 +2,12 @@
 # Resume qwen3-coder-30b download — slow & steady for metered/unstable connection
 # Usage: bash resume_30b.sh  (safe to re-run; resumes from where the file stopped)
 URL="https://huggingface.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF/resolve/main/Qwen3-Coder-30B-A3B-Instruct-Q4_0.gguf"
-OUT="/mnt/c/Users/fabie/llmnpu/models/qwen3-coder-30b-Q4_0.gguf"
+WINUSER=$(/mnt/c/Windows/System32/cmd.exe /c "echo %USERNAME%" 2>/dev/null | tr -d '\r\n ')
+[ -z "$WINUSER" ] && WINUSER=$(basename $(echo /mnt/c/Users/*/llmnpu 2>/dev/null | cut -d' ' -f1 | xargs dirname 2>/dev/null) 2>/dev/null)
+OUT="/mnt/c/Users/${WINUSER}/llmnpu/models/qwen3-coder-30b-Q4_0.gguf"
 TOTAL=17379990688
-LOG="/home/fabien/llmnpu/logs/resume_30b.log"
+LOG="$HOME/llmnpu/logs/resume_30b.log"
+mkdir -p "$(dirname "$LOG")" "$(dirname "$OUT")"
 
 have=$(stat -c %s "$OUT" 2>/dev/null || echo 0)
 if [ "$have" -ge "$TOTAL" ]; then echo "Already complete ($have bytes)"; exit 0; fi

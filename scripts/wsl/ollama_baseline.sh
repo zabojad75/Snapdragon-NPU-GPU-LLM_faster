@@ -3,7 +3,7 @@
 # localhost:11434 (WSL2 mirrors localhost). Tests each model at multiple
 # context sizes and measures prompt-eval + eval token/s.
 set -u
-LOG="/home/fabien/llmnpu/benchmarks/ollama_baseline.jsonl"
+LOG="$HOME/llmnpu/benchmarks/ollama_baseline.jsonl"
 API="http://localhost:11434/api/generate"
 
 run_one () {
@@ -20,7 +20,7 @@ run_one () {
   echo "{\"model\":\"$model\",\"ctx\":$ctx,\"load_s\":$loadt,\"ptok\":$(echo $pps|cut -d, -f1),\"psec\":$(echo $pps|cut -d, -f2),\"pps\":$(echo $pps|cut -d, -f3),\"etok\":$(echo $eps|cut -d, -f1),\"esec\":$(echo $eps|cut -d, -f2),\"eps\":$(echo $eps|cut -d, -f3)}" >> "$LOG"
 }
 
-mkdir -p /home/fabien/llmnpu/benchmarks
+mkdir -p "$HOME/llmnpu/benchmarks"
 : > "$LOG"
 
 # Models with context sweep. num_predict kept modest (192) to keep runtime sane;

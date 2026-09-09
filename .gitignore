@@ -14,11 +14,18 @@ data/
 # runtime state
 openwebui-data/
 *.db
+*.sqlite
 *.log
+*.jsonl
 venv/
 .venv/
 __pycache__/
 *.pyc
+.webui_secret_key
+
+# local-only outputs (keep docs/*.md, ignore generated results)
+benchmarks/
+STATUS.md
 
 # secrets / personal
 *.pem
@@ -26,3 +33,4 @@ __pycache__/
 id_*
 *.pub
 token*
+config/opencode.jsonc
