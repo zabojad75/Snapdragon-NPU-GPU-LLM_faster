@@ -33,7 +33,8 @@ A complete local AI stack for **Windows 11 ARM64 on Snapdragon X / X2 Elite** (A
 | Mistral-Nemo-12B | dense | Q4_0 | ~17 | 16K |
 | Qwen2.5-Coder-1.5B | dense | Q4_0 | ~90 | 16K |
 
-All numbers measured at 16K context. The panel's GPU card offers a context
+All numbers measured at 16K context on Adreno driver 32.0.149.0
+(see Requirements — 32.0.172.1 breaks GPU acceleration). The panel's GPU card offers a context
 picker (4K / 8K / 16K / 24K / 32K / **64K**) with a live RAM-fit hint — larger
 contexts work but cost KV-cache RAM (see `/api/ctx/estimate`), so 64K is
 realistic for the smaller models / large-RAM machines, while the 30B is happiest
@@ -47,10 +48,16 @@ the GPU gives 1.5–2.5x over CPU for most models.
 
 ## Requirements
 
-Make sure your machine meets all three before starting — the 30B model in
+Make sure your machine meets all of the following before starting — the 30B model in
 particular needs the RAM and disk headroom:
 
 - Snapdragon X / X Elite / X2 Elite laptop (Windows 11 ARM64, 24 GB+ RAM; 32 GB+ for the 30B)
+- Adreno GPU driver **32.0.149.0** (the ASUS-validated release). ⚠️ Driver
+  **32.0.172.1** (shipped as "Windows Graphics Driver 2026.08.x") breaks the
+  OpenCL path this project uses for the GPU — everything silently falls back
+  to CPU. Check yours in Device Manager → Display adapters → Adreno → Driver
+  tab, and decline Adreno update prompts in Snapdragon Control Panel /
+  Software Center until Qualcomm ships a fixed release.
 - WSL2 with Ubuntu ARM64 (`wsl --install -d Ubuntu`)
 - ~60 GB free disk (models + GenieX + build)
 
