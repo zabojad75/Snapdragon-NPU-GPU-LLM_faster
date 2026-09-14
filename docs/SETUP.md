@@ -63,7 +63,10 @@ Produces `%USERPROFILE%\llmnpu\pkg-opencl\bin\llama-server.exe`.
 
 > The build uses the upstream Snapdragon preset
 > (`docs/backend/snapdragon/CMakeUserPresets.json` inside llama.cpp),
-> with `GGML_HEXAGON=OFF` and `LLAMA_BUILD_UI=OFF`.
+> with `GGML_OPENCL=ON`, `GGML_HEXAGON=OFF` and `LLAMA_BUILD_UI=OFF`
+> (passed explicitly in `scripts\windows\build_opencl.bat`, which also
+> reconfigures `--fresh` — without that, a stale `build-opencl/CMakeCache.txt`
+> can silently keep `GGML_OPENCL=OFF` and produce a CPU-only build).
 
 ## 4. GenieX (the NPU engine)
 

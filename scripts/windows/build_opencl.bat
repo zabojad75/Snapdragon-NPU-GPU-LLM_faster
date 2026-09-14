@@ -21,7 +21,7 @@ set HEXAGON_TOOLS_ROOT=
 set CMAKE_PREFIX_PATH=C:\Qualcomm\OpenCL_SDK\2.3.2
 
 where cl
-cmake --preset arm64-windows-snapdragon-release -B build-opencl -D GGML_HEXAGON=OFF -D LLAMA_BUILD_UI=OFF -D "CMAKE_C_STANDARD_LIBRARIES=-lmsvcrt -lucrt -loldnames -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32" -D "CMAKE_CXX_STANDARD_LIBRARIES=-lmsvcrt -lucrt -loldnames -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32"
+cmake --preset arm64-windows-snapdragon-release -B build-opencl --fresh -D GGML_OPENCL=ON -D GGML_OPENCL_USE_ADRENO_KERNELS=ON -D GGML_HEXAGON=OFF -D LLAMA_BUILD_UI=OFF -D "CMAKE_C_STANDARD_LIBRARIES=-lmsvcrt -lucrt -loldnames -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32" -D "CMAKE_CXX_STANDARD_LIBRARIES=-lmsvcrt -lucrt -loldnames -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32"
 if errorlevel 1 ( echo CONFIGURE_FAILED & exit /b 1 )
 cmake --build build-opencl --config Release --parallel
 if errorlevel 1 ( echo BUILD_FAILED & exit /b 1 )
