@@ -549,7 +549,7 @@ pre {
           <pre id="npuLog"></pre>
         </div>
         <div class="row">
-          <span class="label">Context budget check (NPU 4K · GPU 16K)</span>
+          <span class="label">Context budget check (NPU 4K · GPU selected ctx)</span>
         </div>
         <div class="row">
           <textarea id="budgetText" placeholder="paste your task text here…"></textarea>
@@ -568,6 +568,8 @@ pre {
 const $ = id => document.getElementById(id);
 function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
 async function api(path, opts) { const r = await fetch('/api'+path, opts); const d = await r.json(); if (!r.ok) throw new Error(d.detail || r.statusText); return d; }
+// state-changing panel calls: POST + X-LLMNPU header (the backend rejects anything else)
+function post(path) { return api(path, {method: 'POST', headers: {'X-LLMNPU': '1'}}); }
 function toast(msg, ms=3500) { $('toast').innerHTML = esc(msg); $('toast').style.display = 'block'; setTimeout(() => $('toast').style.display = 'none', ms); }
 function age(ts) { const s = Math.floor((Date.now() - ts*1000)/1000); return s < 60 ? s+'s' : Math.floor(s/60)+'m'; }
 let S = null;
@@ -628,6 +630,7 @@ async function poll() {
       opt.value = m.name;
       let text = `${m.name} (${(m.size/1e9).toFixed(1)} GB)`;
       if (m.expected && m.size < m.expected) text += ` ▮${Math.round(100*m.size/m.expected)}%`;
+      else if (m.partial) text += ' ▮downloading';
       opt.textContent = text;
       $('model').appendChild(opt);
     });
@@ -745,7 +748,7 @@ async function gpuStart() {
   }
   toast('loading ' + model + ' …');
   try {
-    await api('/gpu/start?model=' + encodeURIComponent(model) + '&ctx=' + ctx);
+    await post('/gpu/start?model=' + encodeURIComponent(model) + '&ctx=' + ctx);
     toast('GPU starting — model loads ~15-60 s');
   } catch (e) {
     toast('ERR ' + e.message, 6000);
@@ -754,7 +757,7 @@ async function gpuStart() {
 
 async function gpuStop() {
   try {
-    await api('/gpu/stop');
+    await post('/gpu/stop');
     toast('GPU stopping…');
   } catch (e) {
     toast('ERR ' + e.message);
@@ -763,8 +766,9 @@ async function gpuStop() {
 
 async function gpuRestart() {
   const model = $('model').value;
+  const ctx = $('ctx').value;
   try {
-    await api('/gpu/restart?model=' + encodeURIComponent(model));
+    await post('/gpu/restart?model=' + encodeURIComponent(model) + '&ctx=' + ctx);
     toast('GPU restarting…');
   } catch (e) {
     toast('ERR ' + e.message, 6000);
@@ -781,7 +785,7 @@ async function modelDelete() {
   const size = info ? ' (' + (info.size / 1e9).toFixed(2) + ' GB)' : '';
   if (!confirm('Delete ' + model + size + ' from disk?\nThis cannot be undone.')) return;
   try {
-    const d = await api('/models/delete?model=' + encodeURIComponent(model));
+    const d = await post('/models/delete?model=' + encodeURIComponent(model));
     toast('deleted ' + d.deleted);
   } catch (e) {
     toast('ERR ' + e.message, 6000);
@@ -790,7 +794,7 @@ async function modelDelete() {
 
 async function npuStart() {
   try {
-    await api('/npu/start');
+    await post('/npu/start');
     toast('NPU starting…');
   } catch (e) {
     toast('ERR ' + e.message);
@@ -799,7 +803,7 @@ async function npuStart() {
 
 async function npuStop() {
   try {
-    await api('/npu/stop');
+    await post('/npu/stop');
     toast('NPU stopping…');
   } catch (e) {
     toast('ERR ' + e.message);
@@ -808,7 +812,7 @@ async function npuStop() {
 
 async function npuRestart() {
   try {
-    await api('/npu/restart');
+    await post('/npu/restart');
     toast('NPU restarting…');
   } catch (e) {
     toast('ERR ' + e.message);
@@ -875,7 +879,8 @@ function budgetCheck() {
   }
   const est = Math.round(t.length / 4);
   const npu = est <= 3000 ? 'fits NPU' : 'exceeds NPU (4K)';
-  const gpu = est <= 12000 ? 'fits GPU' : 'exceeds GPU (16K)';
+  const maxGpu = parseInt(($('ctx') && $('ctx').value) || '16384', 10) || 16384;
+  const gpu = est <= maxGpu ? 'fits GPU (' + maxGpu + ')' : 'exceeds GPU (' + maxGpu + ')';
   $('budgetOut').textContent = '~' + est + ' tokens → ' + npu + ' · ' + gpu;
 }
 
@@ -930,7 +935,7 @@ function renderJobs() {
 
 async function cancelJob(id) {
   try {
-    await api('/jobs/' + id + '/cancel', {method: 'POST'});
+    await post('/jobs/' + id + '/cancel');
     toast('cancelled');
   } catch (e) {
     toast('ERR ' + e.message);
@@ -944,7 +949,7 @@ async function doDownload() {
     return;
   }
   try {
-    const d = await api('/download?url=' + encodeURIComponent(url));
+    const d = await post('/download?url=' + encodeURIComponent(url));
     toast('download started: ' + d.file);
   } catch (e) {
     toast('ERR ' + e.message, 6000);
@@ -959,7 +964,7 @@ async function doQuantize() {
     return;
   }
   try {
-    const d = await api('/quantize?model=' + encodeURIComponent(model) + '&quant=' + quant);
+    const d = await post('/quantize?model=' + encodeURIComponent(model) + '&quant=' + quant);
     toast('quantize started → ' + d.out);
   } catch (e) {
     toast('ERR ' + e.message, 6000);
@@ -973,7 +978,7 @@ async function doNpuPull() {
     return;
   }
   try {
-    await api('/npu/pull?repo=' + encodeURIComponent(repo));
+    await post('/npu/pull?repo=' + encodeURIComponent(repo));
     toast('NPU pull started');
   } catch (e) {
     toast('ERR ' + e.message, 6000);

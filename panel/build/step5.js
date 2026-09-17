@@ -40,7 +40,7 @@ function renderJobs() {
 
 async function cancelJob(id) {
   try {
-    await api('/jobs/' + id + '/cancel', {method: 'POST'});
+    await post('/jobs/' + id + '/cancel');
     toast('cancelled');
   } catch (e) {
     toast('ERR ' + e.message);
@@ -54,7 +54,7 @@ async function doDownload() {
     return;
   }
   try {
-    const d = await api('/download?url=' + encodeURIComponent(url));
+    const d = await post('/download?url=' + encodeURIComponent(url));
     toast('download started: ' + d.file);
   } catch (e) {
     toast('ERR ' + e.message, 6000);
@@ -69,7 +69,7 @@ async function doQuantize() {
     return;
   }
   try {
-    const d = await api('/quantize?model=' + encodeURIComponent(model) + '&quant=' + quant);
+    const d = await post('/quantize?model=' + encodeURIComponent(model) + '&quant=' + quant);
     toast('quantize started → ' + d.out);
   } catch (e) {
     toast('ERR ' + e.message, 6000);
@@ -83,7 +83,7 @@ async function doNpuPull() {
     return;
   }
   try {
-    await api('/npu/pull?repo=' + encodeURIComponent(repo));
+    await post('/npu/pull?repo=' + encodeURIComponent(repo));
     toast('NPU pull started');
   } catch (e) {
     toast('ERR ' + e.message, 6000);

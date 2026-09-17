@@ -1,6 +1,8 @@
 const $ = id => document.getElementById(id);
 function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
 async function api(path, opts) { const r = await fetch('/api'+path, opts); const d = await r.json(); if (!r.ok) throw new Error(d.detail || r.statusText); return d; }
+// state-changing panel calls: POST + X-LLMNPU header (the backend rejects anything else)
+function post(path) { return api(path, {method: 'POST', headers: {'X-LLMNPU': '1'}}); }
 function toast(msg, ms=3500) { $('toast').innerHTML = esc(msg); $('toast').style.display = 'block'; setTimeout(() => $('toast').style.display = 'none', ms); }
 function age(ts) { const s = Math.floor((Date.now() - ts*1000)/1000); return s < 60 ? s+'s' : Math.floor(s/60)+'m'; }
 let S = null;
@@ -61,6 +63,7 @@ async function poll() {
       opt.value = m.name;
       let text = `${m.name} (${(m.size/1e9).toFixed(1)} GB)`;
       if (m.expected && m.size < m.expected) text += ` ▮${Math.round(100*m.size/m.expected)}%`;
+      else if (m.partial) text += ' ▮downloading';
       opt.textContent = text;
       $('model').appendChild(opt);
     });

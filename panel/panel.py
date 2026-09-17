@@ -6,10 +6,18 @@ Controls: GPU llama.cpp server (start/stop/load/change model), NPU geniex server
 GGUF downloads (uncapped, resumable), llama-quantize (adapt GGUFs for GPU),
 geniex pull (adapt models for Hexagon NPU).
 Binds 127.0.0.1 only. Runs in the openwebui venv (fastapi+uvicorn already there).
+
+Security model: the panel's own /api/* routes only answer requests whose Host
+is the panel itself (blocks DNS rebinding), and every state-changing route is
+POST-only and requires the `X-LLMNPU: 1` header. A cross-site page cannot send
+a custom header without a CORS preflight, which the panel never grants — so a
+web page cannot start servers, download files or delete models. User input
+that reaches a cmd.exe command line (model file, alias) is allowlist-validated.
 """
-import asyncio, json, os, re, shlex, signal, sqlite3, struct, subprocess, sys, threading, time
+import json, os, re, struct, subprocess, threading, time
+from contextlib import asynccontextmanager
 from pathlib import Path
-from fastapi import FastAPI, HTTPException
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 import uvicorn
 
@@ -49,34 +57,179 @@ def _detect_win_root() -> Path:
 
 WIN_ROOT  = _detect_win_root()
 MODELS    = WIN_ROOT / "models"
-LOGS      = WSL / "logs"
 PANEL     = Path(__file__).resolve().parent
 GENIEX    = WIN_ROOT / "geniex" / "engines" / "geniex" / "geniex.exe"
 QUANTIZER = WIN_ROOT / "llama.cpp" / "build-opencl" / "bin" / "llama-quantize.exe"
 GPU_LOG   = WIN_ROOT / "logs" / "llama_server.log"
 NPU_LOG   = WIN_ROOT / "logs" / "geniex_server.log"
-DL_DIR    = MODELS
-PORT      = 8188
+EXPECTED_FILE = MODELS / ".expected.json"
+PORT      = int(os.environ.get("LLMNPU_PANEL_PORT", "8188"))
 GPU_PORT, NPU_PORT, WEBUI_PORT = 8081, 18181, 3000
 GATEWAY   = os.popen("ip route show default | awk '{print $3}'").read().strip()
 
+# llama-server tuning for Snapdragon X2 Elite + Adreno, measured 2026-09-17
+# (docs/BENCHMARKS.md, "Server tuning"):
+#   -t 4                   with every layer on the GPU, 4 CPU threads are as fast
+#                          as 18 (30B pp512 525 vs 502, tg 35.6 vs 34.6) for less
+#                          CPU power/heat
+#   --spec-type ngram-mod  draft-free speculative decoding from repeated n-grams:
+#                          code edits 25 -> 87 t/s on the 30B, fresh text unchanged
+GPU_TUNING = "-t 4 --spec-type ngram-mod"
+
+# Per-model extra flags, matched on the file name prefix (case-insensitive).
+# Gemma 4 thinks by default; for translations/summaries the hidden reasoning
+# ate the whole output budget (empty answers), so thinking is off. Only
+# allowlisted literals go into the .bat — never user input.
+GPU_MODEL_ARGS = [
+    ("gemma-4", "--reasoning off"),
+]
+
+def model_args(model_file: str) -> str:
+    name = model_file.lower()
+    return " ".join(a for prefix, a in GPU_MODEL_ARGS if name.startswith(prefix))
+
 CMD = "/mnt/c/Windows/System32/cmd.exe"
+POWERSHELL = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
 
 def to_win(p: Path) -> str:
     """WSL /mnt/c/... path -> C:\\... string for cmd.exe."""
     return str(p).replace("/mnt/c/", "C:\\").replace("/", "\\")
 
+def win_script(name: str) -> Path:
+    """Windows-side script: repo layout (scripts\\windows\\) or flat (scripts\\)."""
+    for d in (WIN_ROOT / "scripts" / "windows", WIN_ROOT / "scripts"):
+        if (d / name).exists():
+            return d / name
+    return WIN_ROOT / "scripts" / "windows" / name
+
+# ---------------------------------------------------------------- input validation
+# Anything below ends up on a cmd.exe command line or in a .bat file, where
+# & | < > ^ % " ( ) and spaces are metacharacters — allowlist, never escape.
+MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*\.gguf$")
+ALIAS_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
+CTX_MIN, CTX_MAX = 512, 262144
+
+def _safe_model_name(name: str) -> str:
+    name = (name or "").strip()
+    if not MODEL_RE.match(name) or len(name) > 200:
+        raise HTTPException(400, "bad model filename (letters, digits, . _ + - and .gguf only)")
+    return name
+
+def _model_path(name: str) -> Path:
+    """Validated path of an existing model file inside MODELS."""
+    f = MODELS / _safe_model_name(name)
+    if not f.is_file():
+        if (MODELS / (f.name + ".part")).exists():
+            raise HTTPException(409, f"{f.name} is still downloading")
+        raise HTTPException(404, f"model not found: {f.name}")
+    return f
+
+def _safe_alias(alias: str, model_file: str) -> str:
+    alias = (alias or "").strip() or default_alias(model_file)
+    if not ALIAS_RE.match(alias):
+        raise HTTPException(400, "bad alias (letters, digits, . _ : - only, max 64)")
+    return alias
+
+def _safe_ctx(ctx) -> int:
+    try:
+        ctx = int(ctx)
+    except (TypeError, ValueError):
+        raise HTTPException(400, "ctx must be an integer")
+    if not CTX_MIN <= ctx <= CTX_MAX:
+        raise HTTPException(400, f"ctx must be between {CTX_MIN} and {CTX_MAX}")
+    return ctx
+
+_QUANT_SUFFIX = re.compile(r"-(I?Q\d\w*|F16|BF16|F32)$", re.IGNORECASE)
+
+def default_alias(model_file: str) -> str:
+    """Served model id: filename stem without the quant suffix
+    (qwen3-coder-30b-Q4_0.gguf -> qwen3-coder-30b), matching serve_gpu.bat
+    and the opencode config, so the id is the same whichever launcher ran."""
+    return _QUANT_SUFFIX.sub("", Path(model_file).stem) or Path(model_file).stem
+
+# ---------------------------------------------------------------- request guards
+ALLOWED_HOSTS = {f"127.0.0.1:{PORT}", f"localhost:{PORT}", f"[::1]:{PORT}"}
+
+def guard_host(request: Request):
+    """Only answer requests addressed to the panel itself (DNS rebinding)."""
+    if request.headers.get("host", "").lower() not in ALLOWED_HOSTS:
+        raise HTTPException(403, "forbidden host")
+
+def guard_write(request: Request):
+    """State-changing routes: POST + custom header (forces a CORS preflight,
+    so cross-site pages can't trigger them)."""
+    if request.method != "POST" or request.headers.get("x-llmnpu") != "1":
+        raise HTTPException(403, "state-changing call needs POST + X-LLMNPU: 1 header")
+
+# ---------------------------------------------------------------- log helpers
+def _read_tail(p: Path, max_bytes=65536):
+    """Last lines of a file without reading all of it (logs live on /mnt/c,
+    where full reads on every poll are slow)."""
+    try:
+        with open(p, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - max_bytes))
+            data = f.read()
+    except Exception:
+        return []
+    lines = data.decode("utf-8", errors="replace").splitlines()
+    if size > max_bytes and lines:
+        lines = lines[1:]   # first line is probably cut
+    return lines
+
+def _read_head(p: Path, max_bytes=262144):
+    try:
+        with open(p, "rb") as f:
+            return f.read(max_bytes).decode("utf-8", errors="replace").splitlines()
+    except Exception:
+        return []
+
+def _tail(p: Path, n=8):
+    return _read_tail(p)[-n:]
+
+def _load_expected():
+    """Expected full sizes of GGUFs (bytes), recorded at download start."""
+    exp = {"qwen3-coder-30b-Q4_0.gguf": 17379990688}
+    try:
+        exp.update(json.loads(EXPECTED_FILE.read_text()))
+    except Exception:
+        pass
+    return exp
+
+def _save_expected(name, size):
+    exp = {}
+    try:
+        exp = json.loads(EXPECTED_FILE.read_text())
+    except Exception:
+        pass
+    if size:
+        exp[name] = size
+    else:
+        exp.pop(name, None)
+    try:
+        EXPECTED_FILE.write_text(json.dumps(exp, indent=1))
+    except Exception as e:
+        print("could not record expected size:", e, flush=True)
+
+def _check_complete(f: Path):
+    exp = _load_expected().get(f.name)
+    size = f.stat().st_size
+    if exp and size < exp:
+        raise HTTPException(409, f"model still downloading ({size/1e9:.1f}/{exp/1e9:.1f} GB) — wait for it to finish")
+
 # ---------------------------------------------------------------- job registry
 class Job:
     """A long-running shell job (download / quantize / npu-pull) with progress."""
-    def __init__(self, jid, kind, label, cmd, workdir=None, monitor=None):
+    def __init__(self, jid, kind, label, cmd, on_done=None):
         self.id, self.kind, self.label = jid, kind, label
-        self.cmd, self.workdir, self.monitor = cmd, workdir, monitor
+        self.cmd, self.on_done = cmd, on_done
         self.started = time.time()
         self.proc = None
-        self.lines = []          # last 40 log lines
+        self.lines = []          # recent log lines
         self.status = "running"  # running|done|error
         self.result = ""
+        self.cancelled = False
 
     def to_dict(self):
         return {"id": self.id, "kind": self.kind, "label": self.label,
@@ -88,31 +241,45 @@ JOBS_LOCK = threading.Lock()
 
 def _run_job(job: Job):
     try:
-        job.proc = subprocess.Popen(job.cmd, cwd=job.workdir,
-                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                    text=True, shell=False)
+        job.proc = subprocess.Popen(job.cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                    text=True, errors="replace")
         for line in job.proc.stdout:
-            line = line.rstrip()
-            job.lines.append(line)
+            job.lines.append(line.rstrip())
             if len(job.lines) > 400:
                 del job.lines[:200]
         job.proc.wait()
+        if job.cancelled:
+            job.status, job.result = "error", "cancelled"
+            return
         job.status = "done" if job.proc.returncode == 0 else "error"
         job.result = f"exit {job.proc.returncode}"
+        if job.status == "done" and job.on_done:
+            job.result = job.on_done() or job.result
     except Exception as e:
         job.status = "error"
         job.result = str(e)
 
-def spawn_job(kind, label, cmd, workdir=None, monitor=None) -> Job:
+def spawn_job(kind, label, cmd, on_done=None) -> Job:
     jid = f"{kind}-{int(time.time()*1000)%100000}-{len(JOBS)}"
-    job = Job(jid, kind, label, cmd, workdir, monitor)
+    job = Job(jid, kind, label, cmd, on_done)
     with JOBS_LOCK:
-        # one download/quantize/pull at a time per kind is enforced by callers
         JOBS[jid] = job
     threading.Thread(target=_run_job, args=(job,), daemon=True).start()
     return job
 
-# ---------------------------------------------------------------- GPU control
+def _job_running(kind):
+    with JOBS_LOCK:
+        return any(j.kind == kind and j.status == "running" for j in JOBS.values())
+
+# ---------------------------------------------------------------- GPU/NPU control
+def _http_ok(url, timeout=3):
+    try:
+        import urllib.request
+        with urllib.request.urlopen(url, timeout=timeout) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
 def gpu_loaded_model():
     """Alias of the served model, from llama-server's /v1/models (OpenAI format)."""
     try:
@@ -124,111 +291,99 @@ def gpu_loaded_model():
         return None
 
 def gpu_up():
-    try:
-        import urllib.request
-        with urllib.request.urlopen(f"http://{GATEWAY}:{GPU_PORT}/health", timeout=2) as r:
-            return r.status == 200
-    except Exception:
-        return False
+    return _http_ok(f"http://{GATEWAY}:{GPU_PORT}/health", 2)
 
 def npu_up():
-    try:
-        import urllib.request
-        with urllib.request.urlopen(f"http://{GATEWAY}:{NPU_PORT}/v1/models", timeout=2) as r:
-            return r.status == 200
-    except Exception:
-        return False
+    return _http_ok(f"http://{GATEWAY}:{NPU_PORT}/v1/models", 2)
 
-def webui_up():
-    try:
-        import urllib.request
-        with urllib.request.urlopen(f"http://127.0.0.1:{WEBUI_PORT}/health", timeout=2) as r:
-            return r.status == 200
-    except Exception:
-        return False
-
-def kill_gpu():
-    """taskkill via cmd.exe with hard timeout — run in a worker thread to never block."""
+def _taskkill_async(image):
+    """taskkill via cmd.exe with hard timeout, in a worker thread (never blocks)."""
     def _kill():
         try:
-            subprocess.run([CMD, "/c", "taskkill /F /IM llama-server.exe"],
+            subprocess.run([CMD, "/c", f"taskkill /F /IM {image}"],
                            capture_output=True, text=True, timeout=15)
         except Exception:
             pass
     threading.Thread(target=_kill, daemon=True).start()
 
-def _down_wait(comm, timeout=15):
+def _procs_alive(images):
+    """{image: True/False/None} from ONE tasklist call (None = unknown).
+    Each cmd.exe launch from WSL costs ~0.1 s and a Windows process creation,
+    so the poller checks all images at once instead of one call per image."""
+    try:
+        out = subprocess.run([CMD, "/c", "tasklist", "/NH", "/FO", "CSV"],
+                             capture_output=True, text=True, errors="replace", timeout=10)
+        if out.returncode != 0 or not out.stdout.strip():
+            return {i: None for i in images}
+        running = {ln.split(",", 1)[0].strip('"').lower()
+                   for ln in out.stdout.splitlines() if ln.strip()}
+        return {i: i.lower() in running for i in images}
+    except Exception:
+        return {i: None for i in images}
+
+def _proc_alive(image):
+    return _procs_alive([image])[image]
+
+def _down_wait(image, timeout=15):
     """Synchronously taskkill a Windows process and block until it's really gone
     (so its listening port is freed before the next server binds it)."""
     try:
-        subprocess.run([CMD, "/c", f"taskkill /F /IM {comm}"],
+        subprocess.run([CMD, "/c", f"taskkill /F /IM {image}"],
                        capture_output=True, text=True, timeout=15)
     except Exception:
         pass
     deadline = time.time() + timeout
     while time.time() < deadline:
-        if _proc_alive(comm) is False:
+        if _proc_alive(image) is False:
             time.sleep(0.5)   # let the OS release the socket
             return True
         time.sleep(0.5)
     return False
 
-def kill_npu():
-    def _kill():
-        try:
-            subprocess.run([CMD, "/c", "taskkill /F /IM geniex.exe"],
-                           capture_output=True, text=True, timeout=15)
-        except Exception:
-            pass
-    threading.Thread(target=_kill, daemon=True).start()
+def _launch_hidden(target: Path):
+    """Run a .bat windowless via hidden.vbs (no console, no taskbar entry)."""
+    subprocess.Popen([CMD, "/c", "wscript.exe", to_win(win_script("hidden.vbs")),
+                      "cmd", "/c", to_win(target)],
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-def start_gpu(model_file: str, ctx: int, alias: str, my_epoch: int | None = None):
-    # hot-switch safety: if a server is running (or its process is lingering),
-    # kill it and WAIT until the port is freed — otherwise the new instance
-    # fails to bind 8081 and dies silently
-    if gpu_up() or _proc_alive("llama-server.exe") is True:
-        _down_wait("llama-server.exe")
-    # write a one-shot launcher bat (runs windowless via hidden.vbs — no
-    # console, no taskbar entry) then spawn it detached
-    bat = WIN_ROOT / "scripts" / "panel_gpu_launcher.bat"
-    bat.parent.mkdir(parents=True, exist_ok=True)
-    bat.write_text(
-        "@echo off\r\n"
-        f"set PATH={to_win(WIN_ROOT / 'pkg-opencl' / 'bin')};%PATH%\r\n"
-        f"llama-server -m {to_win(MODELS / model_file)} "
-        f"--alias {alias} -ngl 99 -c {ctx} -fa on "
-        f"--host 0.0.0.0 --port {GPU_PORT} --no-webui "
-        f"> {to_win(WIN_ROOT / 'logs' / 'llama_server.log')} 2>&1\r\n"
-    )
-    win = to_win(bat)
-    vbs = to_win(WIN_ROOT / "scripts" / "hidden.vbs")
+def start_gpu(model_file: str, ctx: int, alias: str, my_epoch: int):
+    """model_file / alias / ctx MUST already be validated (_model_path,
+    _safe_alias, _safe_ctx): they are written into a .bat file."""
     def _start():
-        if my_epoch is not None and ACTION_EPOCH["gpu"] != my_epoch:
+        # hot-switch safety: if a server is running (or its process is lingering),
+        # kill it and WAIT until the port is freed — otherwise the new instance
+        # fails to bind 8081 and dies silently
+        if gpu_up() or _proc_alive("llama-server.exe") is True:
+            _down_wait("llama-server.exe")
+        if ACTION_EPOCH["gpu"] != my_epoch:
             return   # a newer start/stop/restart superseded this launch
+        bat = win_script("hidden.vbs").parent / "panel_gpu_launcher.bat"
+        bat.write_text(
+            "@echo off\r\n"
+            f"set PATH={to_win(WIN_ROOT / 'pkg-opencl' / 'bin')};%PATH%\r\n"
+            f"llama-server -m \"{to_win(MODELS / model_file)}\" "
+            f"--alias {alias} -ngl 99 -c {ctx} -fa on {GPU_TUNING} {model_args(model_file)} "
+            f"--host 0.0.0.0 --port {GPU_PORT} --no-webui "
+            f"> \"{to_win(WIN_ROOT / 'logs' / 'llama_server.log')}\" 2>&1\r\n"
+        )
         try:
-            subprocess.Popen([CMD, "/c", "wscript.exe", vbs,
-                              "cmd", "/c", win],
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            _launch_hidden(bat)
         except Exception as e:
             print("gpu start failed:", e, flush=True)
     threading.Thread(target=_start, daemon=True).start()
 
-def start_npu():
-    if npu_up():
-        return
-    def _start():
-        try:
-            subprocess.Popen([CMD, "/c", to_win(WIN_ROOT / "scripts" / "serve_npu.bat")],
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except Exception as e:
-            print("npu start failed:", e, flush=True)
-    threading.Thread(target=_start, daemon=True).start()
+def _launch_npu():
+    try:
+        subprocess.Popen([CMD, "/c", to_win(win_script("serve_npu.bat"))],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception as e:
+        print("npu start failed:", e, flush=True)
 
 # ---------------------------------------------------------------- state machine
-# A background poller samples health/PID/logs every 2 s and derives a lifecycle
-# state per server. /api/status reads the cache (instant, no per-request
-# timeouts, no false "down" flicker). Intent tracking lets us distinguish
-# "starting" (we asked) from "crashed" (it died on its own).
+# A background poller samples health/PID/logs and derives a lifecycle state per
+# server. /api/status reads the cache (instant, no per-request timeouts, no
+# false "down" flicker). Intent tracking lets us distinguish "starting" (we
+# asked) from "crashed" (it died on its own).
 #
 # Crash detection is two-signal and debounced: a server is only declared
 # crashed after 3 consecutive failed health checks AND a stale log (>10 s) AND
@@ -240,39 +395,22 @@ INTENT = {"gpu": None, "npu": None}   # {"action": "start"/"stop"/"restart", "mo
 CACHE = {}
 CACHE_LOCK = threading.Lock()
 
-# monotonically increasing per-lane action counter — a restart worker aborts if
-# a newer start/stop/restart arrived during its kill+wait, so a Stop can never
-# be overridden by an in-flight restart
+# monotonically increasing per-lane action counter — a start/restart worker
+# aborts if a newer start/stop/restart arrived during its kill+wait, so a Stop
+# can never be overridden by an in-flight restart
 ACTION_EPOCH = {"gpu": 0, "npu": 0}
+WAKE = threading.Event()   # set on user actions: poll now, don't wait out the idle sleep
 
 def _bump_action(which):
     ACTION_EPOCH[which] += 1
     STATE[which]["saw_up"] = False   # a fresh user action resets crash evidence
+    WAKE.set()
     return ACTION_EPOCH[which]
-
-# expected sizes for curated GGUFs (bytes) — used to flag partial downloads
-EXPECTED = {"qwen3-coder-30b-Q4_0.gguf": 17379990688}
 
 CRASH_FAILS = 3      # consecutive failed samples before declaring crashed
 LOG_STALE_S = 10     # log older than this (with health failing) counts as dead
-
-def _sample_http(url, timeout=3):
-    try:
-        import urllib.request
-        with urllib.request.urlopen(url, timeout=timeout) as r:
-            return r.status == 200
-    except Exception:
-        return False
-
-def _proc_alive(comm):
-    """Is a Windows process with this image name running? (tasklist, ~120 ms)."""
-    try:
-        out = subprocess.run(
-            [CMD, "/c", "tasklist", "/FI", f"IMAGENAME eq {comm}", "/NH"],
-            capture_output=True, text=True, timeout=10)
-        return comm.lower() in out.stdout.lower()
-    except Exception:
-        return None   # unknown — don't treat as dead
+POLL_FAST_S = 2      # while something is changing
+POLL_IDLE_S = 5      # when both lanes are steady
 
 def _log_info(p):
     try:
@@ -282,61 +420,62 @@ def _log_info(p):
         return 0, 0
 
 def _gpu_toks():
-    try:
-        for ln in reversed(GPU_LOG.read_text(errors="replace").splitlines()):
-            m = re.search(r"tg = (\d+\.\d+) t/s", ln)
-            if m:
-                return float(m.group(1))
-    except Exception:
-        pass
+    for ln in reversed(_read_tail(GPU_LOG)):
+        m = re.search(r"tg = (\d+\.\d+) t/s", ln)
+        if m:
+            return float(m.group(1))
     return None
 
 def _gpu_ctx_from_log():
     """ctx the running llama-server was started with (from its load banner)."""
-    try:
-        for ln in GPU_LOG.read_text(errors="replace").splitlines():
-            m = re.search(r"n_ctx_slot = (\d+)", ln)
-            if m:
-                return int(m.group(1))
-    except Exception:
-        pass
+    for ln in _read_head(GPU_LOG):
+        m = re.search(r"n_ctx_slot = (\d+)", ln)
+        if m:
+            return int(m.group(1))
     return None
 
+_NPU_SCAN = {"offset": 0, "loaded": False}
+
 def _npu_loaded():
+    """Has the running geniex served a chat since it started? Scans only the
+    bytes appended since the last poll; a shrunk log means a restart."""
+    size, _ = _log_info(NPU_LOG)
+    if size < _NPU_SCAN["offset"]:
+        _NPU_SCAN.update(offset=0, loaded=False)
+    if _NPU_SCAN["loaded"] or size == _NPU_SCAN["offset"]:
+        _NPU_SCAN["offset"] = size
+        return _NPU_SCAN["loaded"]
     try:
-        for ln in reversed(NPU_LOG.read_text(errors="replace").splitlines()):
-            if "POST" in ln and "chat/completions" in ln:
-                return True
+        with open(NPU_LOG, "rb") as f:
+            f.seek(max(_NPU_SCAN["offset"], size - 4_000_000))
+            chunk = f.read(size - f.tell()).decode("utf-8", errors="replace")
+        if re.search(r"POST[^\n]*chat/completions", chunk):
+            _NPU_SCAN["loaded"] = True
     except Exception:
         pass
-    return False
+    _NPU_SCAN["offset"] = size
+    return _NPU_SCAN["loaded"]
 
 def _free_ram_gb():
     try:
         out = subprocess.run(
-            ["/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
-             "-NoProfile", "-Command",
+            [POWERSHELL, "-NoProfile", "-Command",
              "[math]::Round((Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory/1MB,1)"],
             capture_output=True, text=True, timeout=20)
         return float(out.stdout.strip())
     except Exception:
         return None
 
+_GIN_RE = re.compile(
+    r"\[GIN\] (\d{4}/\d{2}/\d{2} - \d{2}:\d{2}:\d{2}) \| \d+ \| +([0-9.]+)([µmns]?)s +\| .* \| +(GET|POST) +\"([^\"]+)\"")
+
 def _npu_busy(window=60):
     """NPU counts as 'doing work' if a chat completion OR a slow (>1.5 s) request
     landed within the window. The panel's own fast health-check GETs are ignored,
     so an idle server reads 'ready', not 'busy'."""
-    try:
-        lines = NPU_LOG.read_text(errors="replace").splitlines()
-    except Exception:
-        return False
-    if not lines:
-        return False
     now = time.time()
-    pat = re.compile(
-        r"\[GIN\] (\d{4}/\d{2}/\d{2} - \d{2}:\d{2}:\d{2}) \| \d+ \| +([0-9.]+)([µmns]?)s +\| .* \| +(GET|POST) +\"([^\"]+)\"")
-    for ln in reversed(lines[-200:]):
-        m = pat.search(ln)
+    for ln in reversed(_read_tail(NPU_LOG)[-200:]):
+        m = _GIN_RE.search(ln)
         if not m:
             continue
         try:
@@ -345,16 +484,8 @@ def _npu_busy(window=60):
             continue
         if now - ts > window:
             return False            # lines only get older from here
-        dur = float(m.group(2))
-        unit = m.group(3)
-        if unit == "\u00b5" or unit == "u":
-            dur /= 1e6
-        elif unit == "m":
-            dur /= 1e3
-        elif unit == "n":
-            dur /= 1e9
-        method, path = m.group(4), m.group(5)
-        if "chat/completions" in path or dur > 1.5:
+        dur = float(m.group(2)) / {"µ": 1e6, "u": 1e6, "m": 1e3, "n": 1e9}.get(m.group(3), 1)
+        if "chat/completions" in m.group(5) or dur > 1.5:
             return True
     return False
 
@@ -425,17 +556,12 @@ def _derive(which, up, busy, log_mtime, now, proc_alive):
         return _set_state(which, prev, "unreachable…")
     return _set_state(which, "off", "stopped")
 
-def _derive_gpu(up, busy, log_mtime, now, proc_alive):
-    return _derive("gpu", up, busy, log_mtime, now, proc_alive)
-
-def _derive_npu(up, busy, log_mtime, now, proc_alive):
-    return _derive("npu", up, busy, log_mtime, now, proc_alive)
-
 # ---------------------------------------------------------------- RAM estimator
 # VRAM (= shared system RAM on Adreno) needed by a GGUF at a given context:
 #   weights + kv_cache + ~2.5 GB llama-server overhead.
 # KV bytes/token parsed from the GGUF header: layers × kv_heads × head_dim,
-# each fp16 (2 bytes) for K and V.
+# each fp16 (2 bytes) for K and V. llama-server uses a unified KV cache
+# (kv_unified = true), so ctx is the total across slots — no per-slot factor.
 _GGUF_CACHE = {}
 
 def _gguf_kv_per_token(path):
@@ -503,69 +629,31 @@ def _gpu_ram_need(model_file, ctx):
         return None
     return (weights + kvpt * ctx) / 1e9 + 2.5   # + llama-server overhead
 
-# the ctx selected at the last GPU launch (for the UI's RAM hint)
+# the ctx selected at the last GPU launch (for the UI's RAM hint and restart)
 LAST_GPU = {"model": None, "ctx": None}
 
-
-def _poller():
-    last_ram = 0.0
-    while True:
-        now = time.time()
-        # process check is fast (~0.12 s); only run the slow health check when
-        # the process is alive (a dead port otherwise eats the full timeout)
-        gproc = _proc_alive("llama-server.exe")
-        gup = _sample_http(f"http://{GATEWAY}:{GPU_PORT}/health", 3) if gproc is not False else False
-        gsize, gmtime = _log_info(GPU_LOG)
-        gmodel = gpu_loaded_model() if gup else None
-        gtoks = _gpu_toks() if gup else None
-        # adopt the running model's ctx from its log (server prints it at load)
-        if gup and gmodel and LAST_GPU["model"] is None:
-            f = MODELS / gmodel
-            if not f.exists():
-                cands = [x for x in MODELS.glob("*.gguf") if x.stem.startswith(gmodel)]
-                f = cands[0] if cands else f
-            LAST_GPU["model"] = f.name
-            LAST_GPU["ctx"] = _gpu_ctx_from_log() or 16384
-        gbusy = gup and (now - gmtime) < 3   # llama log grows only during inference
-        gstate, gsince, gdetail = _derive_gpu(gup, gbusy, gmtime, now, gproc)
-
-        nproc = _proc_alive("geniex.exe")
-        nup = _sample_http(f"http://{GATEWAY}:{NPU_PORT}/v1/models", 3) if nproc is not False else False
-        nsize, nmtime = _log_info(NPU_LOG)
-        nloaded = _npu_loaded() if nup else False
-        nbusy = nup and _npu_busy()
-        nstate, nsince, ndetail = _derive_npu(nup, nbusy, nmtime, now, nproc)
-
-        wup = _sample_http(f"http://127.0.0.1:{WEBUI_PORT}/health", 3)
-
-        with CACHE_LOCK:
-            CACHE.update({
-                "gpu": {"up": gup, "model": gmodel, "toks": gtoks,
-                        "log_size": gsize, "log_mtime": gmtime,
-                        "state": gstate, "since": gsince, "detail": gdetail},
-                "npu": {"up": nup, "loaded": nloaded,
-                        "log_size": nsize, "log_mtime": nmtime,
-                        "state": nstate, "since": nsince, "detail": ndetail},
-                "webui": wup,
-                "ram_free": last_ram,
-                "now": time.strftime("%H:%M:%S"),
-            })
-        if now - last_ram > 30:
-            last_ram = _free_ram_gb() or last_ram
-        time.sleep(2)
-
-def _start_poller():
-    t = threading.Thread(target=_poller, daemon=True)
-    t.start()
+def _find_model_file(alias_or_file):
+    """Model file for a served alias (qwen3-coder-30b -> qwen3-coder-30b-Q4_0.gguf)."""
+    f = MODELS / alias_or_file
+    if f.is_file():
+        return f
+    cands = sorted(x for x in MODELS.glob("*.gguf") if x.stem.startswith(alias_or_file))
+    return cands[0] if cands else None
 
 # ---------------------------------------------------------------- downloads
 def download_state():
-    """Every .gguf in the models dir with size + expected size (for partial %)."""
+    """Every .gguf (and in-progress .gguf.part) with size + expected size."""
+    exp = _load_expected()
     out = []
-    for f in sorted(DL_DIR.glob("*.gguf")):
-        size = f.stat().st_size
-        exp = EXPECTED.get(f.name)
-        out.append({"name": f.name, "size": size, "expected": exp})
+    for f in sorted(MODELS.glob("*.gguf")) + sorted(MODELS.glob("*.gguf.part")):
+        try:
+            size = f.stat().st_size
+        except Exception:
+            continue
+        partial = f.suffix == ".part"
+        name = f.name[:-5] if partial else f.name
+        out.append({"name": name, "size": size, "expected": exp.get(name),
+                    "partial": partial or bool(exp.get(name) and size < exp[name])})
     return out
 
 def hf_size(url):
@@ -578,23 +666,103 @@ def hf_size(url):
     except Exception:
         return 0
 
-def curl_progress_prefix(url, out_path):
+def curl_cmd(url, out_path):
     return ["curl", "-L", "--fail", "-C", "-", "--retry", "60",
             "--retry-all-errors", "--retry-delay", "3",
             "--connect-timeout", "20",
             "-o", str(out_path), url]
 
+# ---------------------------------------------------------------- poller
+def _poller():
+    last_ram = 0.0
+    ram_free = None
+    while True:
+        now = time.time()
+        # one tasklist call for both servers; only run the (slower) health
+        # check when the process is alive — a dead port eats the full timeout
+        procs = _procs_alive(["llama-server.exe", "geniex.exe"])
+        gproc, nproc = procs["llama-server.exe"], procs["geniex.exe"]
+
+        gup = _http_ok(f"http://{GATEWAY}:{GPU_PORT}/health", 3) if gproc is not False else False
+        gsize, gmtime = _log_info(GPU_LOG)
+        gmodel = gpu_loaded_model() if gup else None
+        gtoks = _gpu_toks() if gup else None
+        # adopt the running model's ctx from its log (server prints it at load)
+        if gup and gmodel and LAST_GPU["model"] is None:
+            f = _find_model_file(gmodel)
+            LAST_GPU["model"] = f.name if f else None
+            LAST_GPU["ctx"] = _gpu_ctx_from_log() or 16384
+        gbusy = gup and (now - gmtime) < 3   # llama log grows only during inference
+        gstate, gsince, gdetail = _derive("gpu", gup, gbusy, gmtime, now, gproc)
+
+        nup = _http_ok(f"http://{GATEWAY}:{NPU_PORT}/v1/models", 3) if nproc is not False else False
+        nsize, nmtime = _log_info(NPU_LOG)
+        nloaded = _npu_loaded() if nup else False
+        nbusy = nup and _npu_busy()
+        nstate, nsince, ndetail = _derive("npu", nup, nbusy, nmtime, now, nproc)
+
+        wup = _http_ok(f"http://127.0.0.1:{WEBUI_PORT}/health", 3)
+
+        if now - last_ram > 30:
+            last_ram = now
+            ram_free = _free_ram_gb() or ram_free
+
+        gpu_ram = _gpu_ram_need(LAST_GPU["model"], LAST_GPU["ctx"]) if LAST_GPU["model"] else None
+
+        with CACHE_LOCK:
+            CACHE.update({
+                "gpu": {"up": gup, "model": gmodel, "toks": gtoks,
+                        "state": gstate, "since": gsince, "detail": gdetail,
+                        "log_tail": _tail(GPU_LOG, 8)},
+                "npu": {"up": nup, "loaded": nloaded,
+                        "state": nstate, "since": nsince, "detail": ndetail,
+                        "log_tail": _tail(NPU_LOG, 8)},
+                "webui": wup,
+                "ram_free": ram_free,
+                "gpu_ram": gpu_ram,
+                "models": download_state(),
+                "now": time.strftime("%H:%M:%S"),
+            })
+
+        # poll slower when nothing is changing: fewer Windows process launches
+        steady = (INTENT["gpu"] is None and INTENT["npu"] is None
+                  and gstate in ("ready", "off") and nstate in ("ready", "off"))
+        WAKE.wait(POLL_IDLE_S if steady else POLL_FAST_S)
+        WAKE.clear()
+
 # ---------------------------------------------------------------- quantize
 QUANTS = ["Q4_0", "Q4_1", "Q5_0", "Q5_1", "Q8_0", "Q3_K_M", "Q4_K_M", "Q5_K_M", "Q6_K", "IQ4_XS"]
 
 # ---------------------------------------------------------------- FastAPI app
-app = FastAPI(title="llmnpu Panel")
+import httpx
+from fastapi import WebSocket
+from fastapi.responses import StreamingResponse, Response
+from starlette.background import BackgroundTask
+import websockets
+
+WEBUI_BASE = f"http://127.0.0.1:{WEBUI_PORT}"
+HTTP = None   # shared httpx client for the webui proxy (created in lifespan)
+
+@asynccontextmanager
+async def lifespan(app):
+    global HTTP
+    HTTP = httpx.AsyncClient(base_url=WEBUI_BASE,
+                             timeout=httpx.Timeout(600, connect=5, pool=30))
+    threading.Thread(target=_poller, daemon=True).start()
+    yield
+    await HTTP.aclose()
+
+app = FastAPI(title="llmnpu Panel", lifespan=lifespan)
+api = APIRouter(prefix="/api", dependencies=[Depends(guard_host)])
+write = [Depends(guard_write)]
 
 # NOTE: "/" deliberately has NO panel route — the catch-all at the bottom proxies
 # it to Open WebUI, which is what the <iframe src="/"> in /panel needs.
+# Only the paths below are panel routes; every other /api/* path (Open WebUI's
+# own API) falls through to the proxy.
 
 # ---- status
-@app.get("/api/status")
+@api.get("/status")
 def status():
     with JOBS_LOCK:
         # prune finished jobs after 10 min to keep the list tidy
@@ -609,99 +777,75 @@ def status():
         "gpu": {"up": g.get("up", False), "model": g.get("model"),
                 "state": g.get("state", "off"), "since": g.get("since", 0),
                 "detail": g.get("detail", ""), "toks": g.get("toks"),
-                "log_tail": _tail(GPU_LOG, 8)},
+                "ctx": LAST_GPU["ctx"], "log_tail": g.get("log_tail", [])},
         "npu": {"up": n.get("up", False), "loaded": n.get("loaded", False),
                 "state": n.get("state", "off"), "since": n.get("since", 0),
-                "detail": n.get("detail", ""),
-                "log_tail": _tail(NPU_LOG, 8)},
+                "detail": n.get("detail", ""), "log_tail": n.get("log_tail", [])},
         "webui": c.get("webui", False),
         "ram_free": c.get("ram_free"),
-        "gpu_ram": _gpu_ram_need(LAST_GPU["model"], LAST_GPU["ctx"]) if LAST_GPU["model"] else None,
+        "gpu_ram": c.get("gpu_ram"),
         "gateway": GATEWAY,
-        "models": download_state(),
+        "models": c.get("models", []),
         "jobs": jobs,
         "now": c.get("now", time.strftime("%H:%M:%S")),
     }
 
 # ---- ctx RAM estimate: given model + ctx, how much RAM will it need?
-@app.get("/api/ctx/estimate")
+@api.get("/ctx/estimate")
 def ctx_estimate(model: str, ctx: int):
-    f = MODELS / model
-    if not f.exists():
-        raise HTTPException(404, f"model not found: {model}")
-    need = _gpu_ram_need(model, int(ctx))
-    if need is None:
-        return {"model": model, "ctx": int(ctx), "need_gb": None, "ok": None}
-    return {"model": model, "ctx": int(ctx), "need_gb": round(need, 1)}
-
-
-def _tail(p: Path, n=8):
-    try:
-        return p.read_text(errors="replace").splitlines()[-n:]
-    except Exception:
-        return []
+    f = _model_path(model)
+    ctx = _safe_ctx(ctx)
+    need = _gpu_ram_need(f.name, ctx)
+    return {"model": f.name, "ctx": ctx, "need_gb": None if need is None else round(need, 1)}
 
 # ---- GPU lifecycle
-@app.api_route("/api/gpu/start", methods=["POST","GET"])
+@api.post("/gpu/start", dependencies=write)
 def gpu_start(model: str, ctx: int = 16384, alias: str = ""):
-    f = MODELS / model
-    if not f.exists():
-        raise HTTPException(404, f"model not found: {model}")
-    # refuse partial downloads so a half-written .gguf is never loaded
-    exp = EXPECTED.get(model)
-    if exp and f.stat().st_size < exp:
-        raise HTTPException(409, f"model still downloading ({f.stat().st_size/1e9:.1f}/{exp/1e9:.1f} GB) — wait for it to finish")
-    alias = alias or Path(model).stem
-    INTENT["gpu"] = {"action": "start", "model": model, "since": time.time()}
-    LAST_GPU["model"], LAST_GPU["ctx"] = model, int(ctx)
-    my_epoch = _bump_action("gpu")
-    start_gpu(model, ctx, alias, my_epoch)
-    return {"ok": True, "model": model, "alias": alias, "ctx": ctx}
+    f = _model_path(model)
+    _check_complete(f)   # never load a half-written .gguf
+    ctx = _safe_ctx(ctx)
+    alias = _safe_alias(alias, f.name)
+    INTENT["gpu"] = {"action": "start", "model": f.name, "since": time.time()}
+    LAST_GPU["model"], LAST_GPU["ctx"] = f.name, ctx
+    start_gpu(f.name, ctx, alias, _bump_action("gpu"))
+    return {"ok": True, "model": f.name, "alias": alias, "ctx": ctx}
 
-@app.api_route("/api/gpu/stop", methods=["POST","GET"])
+@api.post("/gpu/stop", dependencies=write)
 def gpu_stop():
     INTENT["gpu"] = {"action": "stop", "since": time.time()}
     _bump_action("gpu")
-    kill_gpu()
+    _taskkill_async("llama-server.exe")
     return {"ok": True}
 
-@app.api_route("/api/gpu/restart", methods=["POST","GET"])
-def gpu_restart(model: str = "", ctx: int = 16384, alias: str = ""):
-    # restart the currently loaded model, or the given one
-    target = model or (gpu_loaded_model() or "")
-    if not target:
-        raise HTTPException(400, "no model loaded and none given")
-    f = MODELS / target
-    if not f.exists():
-        # allow restart by alias (e.g. qwen3-coder-30b) -> find the file
-        cands = [x for x in MODELS.glob("*.gguf") if x.stem.startswith(target)]
-        if not cands:
-            raise HTTPException(404, f"model not found: {target}")
-        f = cands[0]
-    exp = EXPECTED.get(f.name)
-    if exp and f.stat().st_size < exp:
-        raise HTTPException(409, f"model still downloading ({f.stat().st_size/1e9:.1f}/{exp/1e9:.1f} GB)")
+@api.post("/gpu/restart", dependencies=write)
+def gpu_restart(model: str = "", ctx: int | None = None, alias: str = ""):
+    """Restart the given model, or the loaded one. ctx defaults to the ctx of
+    the last launch, so a restart never silently shrinks the window."""
+    if model:
+        f = _model_path(model)
+    else:
+        loaded = gpu_loaded_model() or LAST_GPU["model"]
+        f = _find_model_file(loaded) if loaded else None
+        if not f:
+            raise HTTPException(400, "no model loaded and none given")
+        f = _model_path(f.name)
+    _check_complete(f)
+    ctx = _safe_ctx(ctx if ctx is not None else (LAST_GPU["ctx"] or 16384))
+    alias = _safe_alias(alias, f.name)
     INTENT["gpu"] = {"action": "restart", "model": f.name, "since": time.time()}
-    LAST_GPU["model"], LAST_GPU["ctx"] = f.name, int(ctx)
-    my_epoch = _bump_action("gpu")
-    start_gpu(f.name, ctx, alias or Path(f.name).stem, my_epoch)
-    return {"ok": True, "model": f.name, "alias": alias or Path(f.name).stem, "ctx": ctx}
+    LAST_GPU["model"], LAST_GPU["ctx"] = f.name, ctx
+    start_gpu(f.name, ctx, alias, _bump_action("gpu"))
+    return {"ok": True, "model": f.name, "alias": alias, "ctx": ctx}
 
-@app.api_route("/api/models/delete", methods=["POST","GET"])
+@api.post("/models/delete", dependencies=write)
 def model_delete(model: str):
-    name = (model or "").strip()
-    if (not name.lower().endswith(".gguf") or Path(name).name != name
-            or "/" in name or "\\" in name):
-        raise HTTPException(400, "bad model filename")
-    f = MODELS / name
-    if not f.exists() or not f.is_file():
-        raise HTTPException(404, f"model not found: {name}")
+    f = _model_path(model)
+    name, stem = f.name, f.stem
     # the served alias often differs from the filename (alias qwen3-coder-30b
     # vs file qwen3-coder-30b-Q4_0.gguf) — match on either direction so the
     # loaded model can never be deleted out from under the server
-    stem = Path(name).stem
-    loaded = gpu_loaded_model()
     if gpu_up():
+        loaded = gpu_loaded_model()
         if not loaded:
             raise HTTPException(409, "GPU server is up but loaded model is unknown — stop it first")
         if (loaded in (name, stem) or stem.startswith(loaded)
@@ -711,23 +855,25 @@ def model_delete(model: str):
         f.unlink()
     except Exception as e:
         raise HTTPException(500, f"delete failed: {e}")
+    _save_expected(name, None)
     return {"ok": True, "deleted": name}
 
-@app.api_route("/api/npu/start", methods=["POST","GET"])
+@api.post("/npu/start", dependencies=write)
 def npu_start():
     INTENT["npu"] = {"action": "start", "since": time.time()}
     _bump_action("npu")
-    start_npu()
+    if not npu_up():
+        threading.Thread(target=_launch_npu, daemon=True).start()
     return {"ok": True}
 
-@app.api_route("/api/npu/stop", methods=["POST","GET"])
+@api.post("/npu/stop", dependencies=write)
 def npu_stop():
     INTENT["npu"] = {"action": "stop", "since": time.time()}
     _bump_action("npu")
-    kill_npu()
+    _taskkill_async("geniex.exe")
     return {"ok": True}
 
-@app.api_route("/api/npu/restart", methods=["POST","GET"])
+@api.post("/npu/restart", dependencies=write)
 def npu_restart():
     # unconditional kill-then-start: works whether the server is healthy,
     # half-dead, or already gone (the toggle's stale-state trap)
@@ -737,106 +883,117 @@ def npu_restart():
         _down_wait("geniex.exe")
         if ACTION_EPOCH["npu"] != my_epoch:
             return   # a newer start/stop/restart superseded this restart
-        # start_npu() early-returns when up; call the launcher directly
-        try:
-            subprocess.Popen([CMD, "/c", to_win(WIN_ROOT / "scripts" / "serve_npu.bat")],
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except Exception as e:
-            print("npu restart failed:", e, flush=True)
+        _launch_npu()
     threading.Thread(target=_restart, daemon=True).start()
     return {"ok": True}
 
 # ---- logs
-@app.get("/api/logs/{which}")
+@api.get("/logs/{which}")
 def logs(which: str, n: int = 50):
     p = {"gpu": GPU_LOG, "npu": NPU_LOG}.get(which)
     if not p:
         raise HTTPException(404, "unknown log")
-    return {"log": _tail(p, n)}
+    return {"log": _read_tail(p, 1_000_000)[-max(1, min(n, 2000)):]}
 
 # ---- downloads
-@app.api_route("/api/download", methods=["POST","GET"])
+@api.post("/download", dependencies=write)
 def download(url: str, name: str = ""):
     url = url.strip()
-    if not re.match(r"^https?://", url) or ".gguf" not in url.lower():
+    if not re.match(r"^https?://[^\s\"']+$", url) or ".gguf" not in url.lower():
         raise HTTPException(400, "must be a direct http(s) URL to a .gguf file")
-    fname = name.strip() or url.split("/")[-1].split("?")[0]
-    out = DL_DIR / fname
-    with JOBS_LOCK:  # one download at a time
-        if any(j.kind == "download" and j.status == "running" for j in JOBS.values()):
-            raise HTTPException(409, "a download is already running")
-    job = spawn_job("download", f"⤓ {fname}",
-                    curl_progress_prefix(url, out))
-    return {"ok": True, "job": job.id, "file": fname}
+    fname = _safe_model_name(name.strip() or url.split("?")[0].rstrip("/").split("/")[-1])
+    final = MODELS / fname
+    if final.exists():
+        raise HTTPException(409, f"{fname} already exists")
+    if _job_running("download"):
+        raise HTTPException(409, "a download is already running")
+    part = MODELS / (fname + ".part")
+    size = hf_size(url)
+    if size:
+        _save_expected(fname, size)
+
+    def _finish():
+        got = part.stat().st_size
+        if size and got != size:
+            return f"size mismatch {got}/{size} — kept {part.name}"
+        part.rename(final)
+        return f"saved {fname}"
+
+    # curl writes to .part and resumes it (-C -); renamed only when complete,
+    # so a half-downloaded file is never offered as a loadable model
+    job = spawn_job("download", f"⤓ {fname}", curl_cmd(url, part), on_done=_finish)
+    return {"ok": True, "job": job.id, "file": fname, "size": size}
 
 # ---- quantize
-@app.get("/api/quantize/targets")
+@api.get("/quantize/targets")
 def quant_targets():
     return QUANTS
 
-@app.api_route("/api/quantize", methods=["POST","GET"])
+@api.post("/quantize", dependencies=write)
 def quantize(model: str, quant: str):
-    src = MODELS / model
-    if not src.exists():
-        raise HTTPException(404, f"model not found: {model}")
+    src = _model_path(model)
     if quant not in QUANTS:
         raise HTTPException(400, f"unknown quant {quant}")
-    stem = Path(model).stem
-    out_name = f"{stem}-{quant}.gguf"
-    out = MODELS / out_name
-    with JOBS_LOCK:
-        if any(j.kind == "quantize" and j.status == "running" for j in JOBS.values()):
-            raise HTTPException(409, "a quantize job is already running")
-    if Path(model).stem.endswith(tuple(q.lower() for q in QUANTS)):
-        pass  # re-quantizing a quant is allowed (user's choice)
-    cmd = [str(QUANTIZER), str(src).replace("/mnt/c/", "C:\\").replace("/", "\\"),
-           str(out).replace("/mnt/c/", "C:\\").replace("/", "\\"), quant]
-    job = spawn_job("quantize", f"⚙ {out_name}", cmd)
-    return {"ok": True, "job": job.id, "out": out_name}
+    out = MODELS / f"{src.stem}-{quant}.gguf"
+    if _job_running("quantize"):
+        raise HTTPException(409, "a quantize job is already running")
+    job = spawn_job("quantize", f"⚙ {out.name}", [str(QUANTIZER), to_win(src), to_win(out), quant])
+    return {"ok": True, "job": job.id, "out": out.name}
 
 # ---- NPU pull
-@app.api_route("/api/npu/pull", methods=["POST","GET"])
+@api.post("/npu/pull", dependencies=write)
 def npu_pull(repo: str):
     repo = repo.strip()
     if not re.match(r"^[\w.\-]+/[\w.\-]+(:\w+)?$", repo):
         raise HTTPException(400, "bad model id, expected org/name[:precision]")
-    with JOBS_LOCK:
-        if any(j.kind == "npull" and j.status == "running" for j in JOBS.values()):
-            raise HTTPException(409, "an NPU pull is already running")
-    cmd = [CMD, "/c", str(GENIEX).replace("/mnt/c/", "C:\\").replace("/", "\\"),
+    if _job_running("npull"):
+        raise HTTPException(409, "an NPU pull is already running")
+    cmd = [CMD, "/c", to_win(GENIEX),
            "--data-dir", to_win(WIN_ROOT / "geniex" / "models" / "geniex"),
            "--skip-update", "pull", repo]
     job = spawn_job("npull", f"NPU ⤓ {repo}", cmd)
     return {"ok": True, "job": job.id}
 
 # ---- job control
-@app.get("/api/jobs")
+@api.get("/jobs")
 def jobs():
     with JOBS_LOCK:
         return [j.to_dict() for j in JOBS.values()]
 
-@app.api_route("/api/jobs/{jid}/cancel", methods=["POST","GET"])
+# Killing the WSL-side wrapper (cmd.exe / interop proxy) can leave the Windows
+# process running, so cancel also kills the Windows process itself. The NPU
+# pull shares geniex.exe with the NPU server: match its command line only.
+_CANCEL_WIN = {
+    "quantize": [CMD, "/c", "taskkill /F /T /IM llama-quantize.exe"],
+    "npull": [POWERSHELL, "-NoProfile", "-Command",
+              "Get-CimInstance Win32_Process -Filter \"Name='geniex.exe'\" | "
+              "Where-Object { $_.CommandLine -match ' pull ' } | "
+              "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"],
+}
+
+@api.post("/jobs/{jid}/cancel", dependencies=write)
 def job_cancel(jid: str):
     with JOBS_LOCK:
         j = JOBS.get(jid)
     if not j:
         raise HTTPException(404, "no such job")
     if j.proc and j.proc.poll() is None:
+        j.cancelled = True
         try:
             j.proc.terminate()
         except Exception:
             pass
-        j.status = "error"; j.result = "cancelled"
+        if j.kind in _CANCEL_WIN:
+            try:
+                subprocess.run(_CANCEL_WIN[j.kind], capture_output=True, timeout=30)
+            except Exception:
+                pass
     return {"ok": True}
+
+app.include_router(api)
 
 # ---- Open WebUI embedded at the ROOT of :8188 (its absolute paths work untouched).
 # Panel's own routes (/panel, /api/*) are registered above and take precedence.
-import httpx
-from fastapi import Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import StreamingResponse, Response, RedirectResponse
-import websockets
-
-WEBUI_BASE = f"http://127.0.0.1:{WEBUI_PORT}"
 HOP = {"content-length", "transfer-encoding", "connection", "host", "keep-alive",
        "proxy-authenticate", "proxy-authorization", "te", "trailers", "upgrade"}
 
@@ -849,6 +1006,7 @@ def panel_page():
 # emit). Without this bridge the chat freezes and the UI loops
 # "Connection lost. Reconnecting..." when accessed through the panel.
 async def _ws_bridge(client_ws: WebSocket, upstream_path: str):
+    import asyncio
     await client_ws.accept()
     qs = client_ws.url.query
     upstream_uri = f"ws://127.0.0.1:{WEBUI_PORT}{upstream_path}"
@@ -891,10 +1049,9 @@ async def _ws_bridge(client_ws: WebSocket, upstream_path: str):
         except Exception:
             pass
 
-    import asyncio as _aio
-    t1 = _aio.create_task(_upstream_to_client())
-    t2 = _aio.create_task(_client_to_upstream())
-    done, pending = await _aio.wait({t1, t2}, return_when=_aio.FIRST_COMPLETED)
+    t1 = asyncio.create_task(_upstream_to_client())
+    t2 = asyncio.create_task(_client_to_upstream())
+    done, pending = await asyncio.wait({t1, t2}, return_when=asyncio.FIRST_COMPLETED)
     for t in pending:
         t.cancel()
     try:
@@ -910,18 +1067,15 @@ async def _ws_bridge(client_ws: WebSocket, upstream_path: str):
 async def ws_bridge(path: str, websocket: WebSocket):
     await _ws_bridge(websocket, f"/ws/{path}")
 
-# NOTE: no route at "/" — the catch-all below proxies it to Open WebUI,
-# which is exactly what the <iframe src="/"> needs (no recursion).
-
 async def _proxy(request: Request):
     url = request.url.path + (f"?{request.url.query}" if request.url.query else "")
     headers = {k: v for k, v in request.headers.items()
                if k.lower() not in HOP | {"accept-encoding"}}
     body = await request.body()
-    client = httpx.AsyncClient(base_url=WEBUI_BASE, timeout=600)
+    upstream = None
     try:
-        req = client.build_request(request.method, url, headers=headers, content=body)
-        upstream = await client.send(req, stream=True)
+        req = HTTP.build_request(request.method, url, headers=headers, content=body)
+        upstream = await HTTP.send(req, stream=True)
         enc = upstream.headers.get("content-encoding", "").lower()
         if enc:  # httpx aread() auto-decompresses; strip the stale header
             raw = await upstream.aread()
@@ -931,10 +1085,13 @@ async def _proxy(request: Request):
             return Response(content=raw, status_code=upstream.status_code,
                             headers=out_headers)
         out_headers = {k: v for k, v in upstream.headers.items() if k.lower() not in HOP}
+        # close the upstream response once the body is streamed (or the client
+        # goes away) so pooled connections are returned, never leaked
         return StreamingResponse(upstream.aiter_raw(), status_code=upstream.status_code,
-                                 headers=out_headers)
+                                 headers=out_headers, background=BackgroundTask(upstream.aclose))
     except Exception:
-        await client.aclose()
+        if upstream is not None:
+            await upstream.aclose()
         return JSONResponse({"detail": "Open WebUI not reachable on :3000"}, status_code=502)
 
 # catch-all: everything not matched above goes to the webui
@@ -943,6 +1100,5 @@ async def webui_proxy(path: str, request: Request):
     return await _proxy(request)
 
 if __name__ == "__main__":
-    _start_poller()
-    print(f"llmnpu Panel on http://localhost:{PORT}/panel  (gateway {GATEWAY})")
+    print(f"llmnpu Panel on http://localhost:{PORT}/panel  (gateway {GATEWAY}, windows root {WIN_ROOT})")
     uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")

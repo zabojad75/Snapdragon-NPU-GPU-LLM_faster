@@ -7,7 +7,7 @@ async function gpuStart() {
   }
   toast('loading ' + model + ' …');
   try {
-    await api('/gpu/start?model=' + encodeURIComponent(model) + '&ctx=' + ctx);
+    await post('/gpu/start?model=' + encodeURIComponent(model) + '&ctx=' + ctx);
     toast('GPU starting — model loads ~15-60 s');
   } catch (e) {
     toast('ERR ' + e.message, 6000);
@@ -16,7 +16,7 @@ async function gpuStart() {
 
 async function gpuStop() {
   try {
-    await api('/gpu/stop');
+    await post('/gpu/stop');
     toast('GPU stopping…');
   } catch (e) {
     toast('ERR ' + e.message);
@@ -25,8 +25,9 @@ async function gpuStop() {
 
 async function gpuRestart() {
   const model = $('model').value;
+  const ctx = $('ctx').value;
   try {
-    await api('/gpu/restart?model=' + encodeURIComponent(model));
+    await post('/gpu/restart?model=' + encodeURIComponent(model) + '&ctx=' + ctx);
     toast('GPU restarting…');
   } catch (e) {
     toast('ERR ' + e.message, 6000);
@@ -43,7 +44,7 @@ async function modelDelete() {
   const size = info ? ' (' + (info.size / 1e9).toFixed(2) + ' GB)' : '';
   if (!confirm('Delete ' + model + size + ' from disk?\nThis cannot be undone.')) return;
   try {
-    const d = await api('/models/delete?model=' + encodeURIComponent(model));
+    const d = await post('/models/delete?model=' + encodeURIComponent(model));
     toast('deleted ' + d.deleted);
   } catch (e) {
     toast('ERR ' + e.message, 6000);
@@ -52,7 +53,7 @@ async function modelDelete() {
 
 async function npuStart() {
   try {
-    await api('/npu/start');
+    await post('/npu/start');
     toast('NPU starting…');
   } catch (e) {
     toast('ERR ' + e.message);
@@ -61,7 +62,7 @@ async function npuStart() {
 
 async function npuStop() {
   try {
-    await api('/npu/stop');
+    await post('/npu/stop');
     toast('NPU stopping…');
   } catch (e) {
     toast('ERR ' + e.message);
@@ -70,7 +71,7 @@ async function npuStop() {
 
 async function npuRestart() {
   try {
-    await api('/npu/restart');
+    await post('/npu/restart');
     toast('NPU restarting…');
   } catch (e) {
     toast('ERR ' + e.message);
@@ -137,7 +138,8 @@ function budgetCheck() {
   }
   const est = Math.round(t.length / 4);
   const npu = est <= 3000 ? 'fits NPU' : 'exceeds NPU (4K)';
-  const gpu = est <= 12000 ? 'fits GPU' : 'exceeds GPU (16K)';
+  const maxGpu = parseInt(($('ctx') && $('ctx').value) || '16384', 10) || 16384;
+  const gpu = est <= maxGpu ? 'fits GPU (' + maxGpu + ')' : 'exceeds GPU (' + maxGpu + ')';
   $('budgetOut').textContent = '~' + est + ' tokens → ' + npu + ' · ' + gpu;
 }
 

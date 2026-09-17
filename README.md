@@ -122,8 +122,8 @@ silently breaks behind the proxy (see
 |------|---------|-------|
 | 8188 | llmnpu Panel (proxy) | 127.0.0.1 |
 | 3000 | Open WebUI | localhost |
-| 8081 | llama.cpp GPU server (OpenAI API) | 0.0.0.0 (LAN) |
-| 18181 | GenieX NPU server (OpenAI API) | 0.0.0.0 (LAN) |
+| 8081 | llama.cpp GPU server (OpenAI API) | 0.0.0.0 (restrict: `restrict_lan.ps1`) |
+| 18181 | GenieX NPU server (OpenAI API) | 0.0.0.0 (restrict: `restrict_lan.ps1`) |
 
 ## Known limits (honest engineering)
 
@@ -133,6 +133,13 @@ silently breaks behind the proxy (see
 - **NPU models are context-locked at 4096** by GenieX — fine for chat, unusable for agentic coding
 - **`localhost` never works WSL→Windows** in NAT mode — always the gateway IP (scripts handle this)
 - llama-quantize refuses re-quantizing already-quantized GGUFs — start from F16/BF16 sources
+- The model servers have **no authentication** — run `scripts\windows\restrict_lan.ps1`
+  so only this PC + WSL can reach them. The panel's own API is POST + header
+  protected against cross-site requests (see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md))
+
+Tuned defaults (see [docs/BENCHMARKS.md](docs/BENCHMARKS.md)):
+`-t 4` (4 CPU threads are as fast as 18 with full GPU offload) and
+`--spec-type ngram-mod` (draft-free speculative decoding: code edits ~3.4× faster).
 
 ## License & credits
 

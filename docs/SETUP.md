@@ -111,7 +111,21 @@ Sizing guide (Adreno uses **shared system RAM**): Q4 quant ≈ 1 GB per 1B param
 Opens `http://localhost:8188/panel`. On the webui login screen, **sign up** —
 the first account becomes admin. Then pick a model in the panel dashboard (GPU card → Start).
 
-## 7. Disable builtin tools for the NPU models (required)
+## 7. Keep the model servers off the LAN (recommended)
+
+The first time llama-server / geniex start, Windows asks whether to allow
+network access; "Allow" creates firewall rules open to **any** address, and
+neither server has authentication. On public Wi-Fi anyone nearby could use
+your models. Restrict them to this PC + WSL (elevated PowerShell):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File %USERPROFILE%\llmnpu\scripts\windows\restrict_lan.ps1 -WhatIf  # preview
+powershell -ExecutionPolicy Bypass -File %USERPROFILE%\llmnpu\scripts\windows\restrict_lan.ps1          # apply
+```
+
+(`-AllowLan` reverts to any address, e.g. to serve a second machine.)
+
+## 8. Disable builtin tools for the NPU models (required)
 
 Open WebUI injects ~3–4K tokens of builtin tool definitions (web search, code
 interpreter, time utils, …) into every browser chat. NPU models are

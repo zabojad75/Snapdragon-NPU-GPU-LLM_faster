@@ -26,6 +26,65 @@ Reading the numbers honestly:
   not raw speed.
 - The 12B/20B sit in between (partial offload efficiency).
 
+## Server tuning (2026-09-17, Snapdragon X2 Elite Extreme, driver 32.0.149.0)
+
+`llama-bench -p 512 -n 128 -r 2 -ngl 99 -fa on` (raw log:
+`logs/bench_review_2026-09-17.log`).
+
+CPU threads with every layer on the GPU:
+
+| Model | `-t 4` pp512 / tg128 | `-t 8` | `-t 18` (default) |
+|-------|---------------------|--------|-------------------|
+| Qwen3-Coder-30B-A3B Q4_0 | **525.5 / 35.6** | 525.7 / 35.2 | 501.8 / 34.6 |
+| GPT-OSS-20B Q4_0 | 555.4 / **40.8** | – | 561.9 / 38.1 |
+| Qwen3-8B Q5_0 | **265.7 / 18.5** | – | 207.7 ± 90 / 18.0 |
+
+→ `-t 4` is as fast or faster, steadier, and leaves 14 cores idle (less power
+and heat next to the NPU). Now the default in the panel and `serve_gpu.bat`.
+
+KV cache quantization (`-ctk q8_0 -ctv q8_0`, 30B, `-t 8`): pp512 468.0,
+tg128 **27.8** (−21 %). Not worth it on 48 GB: fp16 KV for the 30B at 64K is
+only ~6.3 GB.
+
+Speculative decoding, 30B served with `-c 16384 -t 4 -np 1`, temperature 0,
+600 generated tokens. "gen" = write a new module; "edit" = reproduce ~8 KB of
+existing code with a rename (what coding agents do all day):
+
+| Mode | gen t/s | edit t/s | acceptance (edit) |
+|------|--------:|---------:|-------------------|
+| none (baseline) | 31.4 | 25.3 | – |
+| `--spec-type ngram-mod` | 31.2 | **86.9** | 564/564 |
+| draft Qwen3-0.6B Q8_0 on GPU | 12.0 | 13.1 | 531/537 |
+| draft 0.6B on GPU + ngram-mod | 12.2 | 63.3 | 586/592 |
+| draft 0.6B on CPU (`-devd none -td 4`) | 26.1 | 25.0 | – |
+
+→ The draft model costs more than it saves: the Adreno GPU is memory-bandwidth
+bound, so running a second model per token slows the 30B down. The draft-free
+n-gram speculator is free on new text and **3.4× faster on edits**: enabled
+by default.
+
+## General-purpose models: Gemma 4 26B-A4B (MoE) vs Qwen3.8-27B (dense)
+
+2026-09-17, both Q4_0 on Adreno, `-t 4 --spec-type ngram-mod`, ctx 16384.
+
+| | Gemma 4 26B-A4B | Qwen3.8-27B |
+|---|---:|---:|
+| llama-bench tg128 | **25.7 t/s** | 6.7 t/s |
+| Prefill, 6.4K-token document | **~225 t/s** | ~57–93 t/s |
+| FR→EN translation (thinking off) | 5.5 s total, 24.6 t/s | – |
+| EN→FR translation (thinking off) | 5.7 s total, 25.4 t/s | – |
+| Same translations, thinking on (600-token cap) | cap hit, empty answer | cap hit, empty answer (6.8–8.1 t/s) |
+| French summary of 6.4K tokens (thinking off) | **67 s**, 412 tokens | – |
+
+- Both models **think by default**; for translation/summaries the reasoning
+  eats the output budget. The panel and `serve_gpu.bat gemma` therefore start
+  Gemma 4 with `--reasoning off` (per-request equivalent:
+  `"chat_template_kwargs": {"enable_thinking": false}`).
+- Gemma's decode drops from ~25 t/s to ~10.5 t/s once ~6K tokens are in
+  context — budget time for long-document work.
+- Gemma 4 26B-A4B Q4_0: `bartowski/google_gemma-4-26B-A4B-it-GGUF`, 14.76 GB.
+  Not the same model as the NPU's Gemma-4-E4B (small ~4B-effective edge model).
+
 ## NPU (GenieX, Hexagon W4A16)
 
 - NPU/Qwen3-8B:W4A16, NPU/Gemma-4-E4B-it:W4A16,
