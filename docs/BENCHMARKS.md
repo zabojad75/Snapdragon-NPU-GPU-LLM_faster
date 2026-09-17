@@ -63,6 +63,27 @@ bound, so running a second model per token slows the 30B down. The draft-free
 n-gram speculator is free on new text and **3.4× faster on edits**: enabled
 by default.
 
+## General-purpose models: Gemma 4 26B-A4B (MoE) vs Qwen3.8-27B (dense)
+
+2026-09-17, both Q4_0 on Adreno, `-t 4 --spec-type ngram-mod`, ctx 16384.
+
+| | Gemma 4 26B-A4B | Qwen3.8-27B |
+|---|---:|---:|
+| llama-bench tg128 | **25.7 t/s** | 6.7 t/s |
+| Prefill, 6.4K-token document | **~225 t/s** | ~57–93 t/s |
+| FR→EN translation (thinking off) | 5.5 s total, 24.6 t/s | – |
+| EN→FR translation (thinking off) | 5.7 s total, 25.4 t/s | – |
+| Same translations, thinking on (600-token cap) | cap hit, empty answer | cap hit, empty answer (6.8–8.1 t/s) |
+| French summary of 6.4K tokens (thinking off) | **67 s**, 412 tokens | – |
+
+- Both models **think by default**; for translation/summaries send
+  `"chat_template_kwargs": {"enable_thinking": false}` (verified on Gemma 4)
+  or the reasoning eats the output budget.
+- Gemma's decode drops from ~25 t/s to ~10.5 t/s once ~6K tokens are in
+  context — budget time for long-document work.
+- Gemma 4 26B-A4B Q4_0: `bartowski/google_gemma-4-26B-A4B-it-GGUF`, 14.76 GB.
+  Not the same model as the NPU's Gemma-4-E4B (small ~4B-effective edge model).
+
 ## NPU (GenieX, Hexagon W4A16)
 
 - NPU/Qwen3-8B:W4A16, NPU/Gemma-4-E4B-it:W4A16,
