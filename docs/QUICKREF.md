@@ -14,7 +14,7 @@ NPU toggle, ⤓ Download, ⚙ Adapt, ▤ Jobs.
 ## Serve a specific model from a terminal
 
 ```bat
-scripts\windows\serve_gpu.bat 30b     REM keys: 30b | 20b | 8b | 12b | 1.5b
+scripts\windows\serve_gpu.bat 30b     REM keys: 30b | 27b | 20b | 8b | 12b | 1.5b
 scripts\windows\status_gpu.bat        REM what's loaded?
 scripts\windows\stop_gpu.bat
 ```
@@ -33,6 +33,13 @@ curl http://localhost:8081/v1/chat/completions -H "Content-Type: application/jso
   -d '{"model":"qwen3-coder-30b","messages":[{"role":"user","content":"hi"}]}'
 ```
 
+Panel API from a terminal (state-changing calls need POST + the header):
+
+```bash
+curl http://127.0.0.1:8188/api/status
+curl -X POST -H 'X-LLMNPU: 1' 'http://127.0.0.1:8188/api/gpu/start?model=qwen3-coder-30b-Q4_0.gguf&ctx=32768'
+```
+
 ## opencode (terminal coding agent)
 
 ```bash
@@ -43,6 +50,32 @@ opencode run --model "llamacpp/qwen3-coder-30b" "your task"
 
 Use the 30B MoE for real coding. Avoid geniex-npu models (4K ctx limit →
 "Input prompt too long" errors).
+
+## Big-context pipeline (inputs beyond any lane's window)
+
+```bash
+python3 scripts/wsl/context_pipeline.py --input docs/ panel/ -q "your question" \
+    --out result.md --npu-cooldown 3
+```
+
+Map-reduce across lanes: chunks (default 3000 t, NPU-safe) are mapped — small
+ones on the NPU (fast prefill), oversize ones on the GPU (packed, wide window) —
+then the GPU model reduces the notes hierarchically into the answer.
+
+- `--dry-run` shows the chunk/routing plan without LLM calls
+- The GPU budget is read from the running server (`/props`), token counts are
+  calibrated with its `/tokenize` (binary files are skipped)
+- Summaries are **checkpointed** (`<out>.ckpt.jsonl`, keyed by model + prompt
+  version + question + chunk): after a crash the same command reuses every
+  finished chunk
+- `--map-lanes gpu` maps on the 30B (slower, best quality); `--map-lanes npu`
+  needs everything to fit 4K chunks
+- **Phased scheduling**: NPU map runs first, GPU after — concurrent GPU+NPU
+  *decode* collapses both to ~2 t/s (measured). Chunks the NPU rejects as too
+  long are requeued into the GPU phase
+- Transient errors (connection reset, 502/503) are retried 3× with backoff
+- `--npu-cooldown 3` (default 2) rests the NPU between calls: the SoC has
+  bugchecked (0x18b VSM) under sustained NPU load
 
 ## NPU models
 
@@ -56,8 +89,8 @@ Or panel → ⚙ Adapt → "NPU pull".
 
 ## Downloads
 
-Panel → ⤓ Download, paste a direct `.gguf` URL (resumable, auto-retry).
-CLI equivalent:
+Panel → ⤓ Download, paste a direct `.gguf` URL (resumable, auto-retry; saved
+as `.gguf.part` until complete). CLI equivalent:
 
 ```bash
 curl -L --fail -C - --retry 60 --retry-all-errors -o \
@@ -88,3 +121,6 @@ curl -L --fail -C - --retry 60 --retry-all-errors -o \
   `WEBUI_SECRET_FILE` pinned (else PermissionError on `.webui_secret_key`)
 - llama-quantize refuses re-quantizing quantized GGUFs (needs F16/BF16 source)
 - One GPU model at a time; 30B @ 16K ctx ≈ 19.4 GB RAM
+- Draft-model speculative decoding (Qwen3-0.6B for the 30B) is **slower** on
+  this hardware (12 vs 31 t/s); the built-in `--spec-type ngram-mod` is the
+  one that pays off (code edits 3.4× faster) and is on by default

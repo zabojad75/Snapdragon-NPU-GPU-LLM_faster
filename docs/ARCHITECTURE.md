@@ -100,14 +100,49 @@ browser ◄── ws://:8188/ws/socket.io ─── panel WebSocket bridge ◄�
 Downloads / quantize / NPU pulls run as tracked jobs (threaded `subprocess`),
 with live log ring-buffers, cancel support, and one-job-at-a-time per kind.
 The registry is in-memory (a panel restart wipes it; `curl -C -` makes
-downloads resumable).
+downloads resumable). Downloads write `<name>.gguf.part` and are renamed only
+once complete (size checked against the HEAD `Content-Length`, recorded in
+`models/.expected.json`), so a half-downloaded file can never be loaded.
+Cancel also kills the Windows-side process (`llama-quantize.exe`, or the
+`geniex pull` process matched by command line — never the NPU server).
 
 GPU start writes a one-shot `.bat` to the **Windows** scripts dir (cmd.exe
 needs a real `C:` path), then launches it **windowless** via `hidden.vbs`
 (`WScript.Shell.Run ..., 0` — no console, no taskbar entry). The same
 self-relaunch pattern is used by `serve_gpu.bat` / `serve_npu.bat` directly.
-GPU PID is read from WSL `/proc` (spawning `tasklist.exe` from a request
-handler hangs).
+`hidden.vbs` quotes only arguments containing spaces: `cmd /c` strips the
+outer quotes when it sees more than two, which broke `serve_gpu.bat 30b 16384`.
+
+## Status poller
+
+A background thread samples both servers and caches the result; `/api/status`
+only reads the cache. One `tasklist /FO CSV` call per cycle covers both
+processes (each cmd.exe launch from WSL is a Windows process creation), logs
+are read by seeking to their tail (they live on `/mnt/c`, slow to read whole),
+and the cycle is 2 s while something changes but 5 s when both lanes are
+steady. A user action wakes the poller immediately.
+
+## Panel API security
+
+The panel's `/api/*` routes are powerful (they write and run `.bat` files,
+download and delete multi-GB files), so:
+
+- **Host check** — requests must be addressed to `127.0.0.1:8188` /
+  `localhost:8188` (defeats DNS rebinding).
+- **State-changing routes are POST-only and need `X-LLMNPU: 1`** — a custom
+  header forces a CORS preflight, which the panel never grants, so a web page
+  you visit can't drive the panel. Read-only routes (`status`, `ctx/estimate`,
+  `logs`, `jobs`, `quantize/targets`) stay GET.
+- **Allowlist validation** of everything that reaches a command line: model
+  file names (`[A-Za-z0-9._+-]*.gguf`, no path separators), aliases, ctx range.
+
+```bash
+curl -X POST -H 'X-LLMNPU: 1' 'http://127.0.0.1:8188/api/gpu/start?model=qwen3-8b-Q5_0.gguf&ctx=16384'
+```
+
+The model servers themselves (`:8081`, `:18181`) have no auth and listen on
+`0.0.0.0` (WSL reaches them via the gateway IP): restrict them to this PC +
+WSL with `scripts\windows\restrict_lan.ps1` (see SETUP).
 
 ## Startup robustness details
 
@@ -118,4 +153,4 @@ handler hangs).
   timeout silently kills the NPU server after 5 quiet minutes.
 - All panel-side Windows process launches are windowless (`wscript hidden.vbs`)
   and hardened with timeouts; status checks never spawn Windows processes
-  from request handlers (GPU PID via `/proc`).
+  from request handlers (only the background poller does).
