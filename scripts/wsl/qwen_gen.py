@@ -24,9 +24,11 @@ def main():
     ap.add_argument("--prompt")
     ap.add_argument("--prompt-file")
     ap.add_argument("--out", required=True)
-    ap.add_argument("--model", default="qwen3-coder-30b-Q4_0")
+    ap.add_argument("--model", default="qwen3-coder-30b")
     ap.add_argument("--max-tokens", type=int, default=2000)
     ap.add_argument("--temp", type=float, default=0.2)
+    ap.add_argument("--keep-reasoning", action="store_true",
+                    help="prepend reasoning_content (gpt-oss) to the output file")
     ap.add_argument("--system", default="You are an expert frontend engineer. "
                     "Output ONLY the requested code inside a single fenced code block. "
                     "No explanations, no commentary, no prose before or after the code.")
@@ -66,7 +68,7 @@ def main():
     usage = d.get("usage", {})
     msg = d["choices"][0]["message"]
     content = msg.get("content") or ""
-    if msg.get("reasoning_content"):
+    if a.keep_reasoning and msg.get("reasoning_content"):
         content = msg["reasoning_content"] + "\n" + content
     ct = usage.get("completion_tokens", 0)
     pt = usage.get("prompt_tokens", 0)
