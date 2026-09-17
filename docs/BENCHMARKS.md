@@ -76,9 +76,10 @@ by default.
 | Same translations, thinking on (600-token cap) | cap hit, empty answer | cap hit, empty answer (6.8–8.1 t/s) |
 | French summary of 6.4K tokens (thinking off) | **67 s**, 412 tokens | – |
 
-- Both models **think by default**; for translation/summaries send
-  `"chat_template_kwargs": {"enable_thinking": false}` (verified on Gemma 4)
-  or the reasoning eats the output budget.
+- Both models **think by default**; for translation/summaries the reasoning
+  eats the output budget. The panel and `serve_gpu.bat gemma` therefore start
+  Gemma 4 with `--reasoning off` (per-request equivalent:
+  `"chat_template_kwargs": {"enable_thinking": false}`).
 - Gemma's decode drops from ~25 t/s to ~10.5 t/s once ~6K tokens are in
   context — budget time for long-document work.
 - Gemma 4 26B-A4B Q4_0: `bartowski/google_gemma-4-26B-A4B-it-GGUF`, 14.76 GB.

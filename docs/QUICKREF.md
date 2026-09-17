@@ -14,7 +14,7 @@ NPU toggle, ⤓ Download, ⚙ Adapt, ▤ Jobs.
 ## Serve a specific model from a terminal
 
 ```bat
-scripts\windows\serve_gpu.bat 30b     REM keys: 30b | 27b | 20b | 8b | 12b | 1.5b
+scripts\windows\serve_gpu.bat 30b     REM keys: 30b | gemma | 20b | 8b | 12b | 1.5b
 scripts\windows\status_gpu.bat        REM what's loaded?
 scripts\windows\stop_gpu.bat
 ```

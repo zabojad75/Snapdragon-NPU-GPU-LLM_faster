@@ -76,6 +76,18 @@ GATEWAY   = os.popen("ip route show default | awk '{print $3}'").read().strip()
 #                          code edits 25 -> 87 t/s on the 30B, fresh text unchanged
 GPU_TUNING = "-t 4 --spec-type ngram-mod"
 
+# Per-model extra flags, matched on the file name prefix (case-insensitive).
+# Gemma 4 thinks by default; for translations/summaries the hidden reasoning
+# ate the whole output budget (empty answers), so thinking is off. Only
+# allowlisted literals go into the .bat — never user input.
+GPU_MODEL_ARGS = [
+    ("gemma-4", "--reasoning off"),
+]
+
+def model_args(model_file: str) -> str:
+    name = model_file.lower()
+    return " ".join(a for prefix, a in GPU_MODEL_ARGS if name.startswith(prefix))
+
 CMD = "/mnt/c/Windows/System32/cmd.exe"
 POWERSHELL = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
 
@@ -350,7 +362,7 @@ def start_gpu(model_file: str, ctx: int, alias: str, my_epoch: int):
             "@echo off\r\n"
             f"set PATH={to_win(WIN_ROOT / 'pkg-opencl' / 'bin')};%PATH%\r\n"
             f"llama-server -m \"{to_win(MODELS / model_file)}\" "
-            f"--alias {alias} -ngl 99 -c {ctx} -fa on {GPU_TUNING} "
+            f"--alias {alias} -ngl 99 -c {ctx} -fa on {GPU_TUNING} {model_args(model_file)} "
             f"--host 0.0.0.0 --port {GPU_PORT} --no-webui "
             f"> \"{to_win(WIN_ROOT / 'logs' / 'llama_server.log')}\" 2>&1\r\n"
         )
