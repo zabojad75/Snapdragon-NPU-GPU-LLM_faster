@@ -51,4 +51,7 @@ PYEOF
 export WEBUI_SECRET_FILE="$HOME/.webui_secret_key"
 cd "$HOME"
 (setsid nohup "$VENV/bin/open-webui" serve --port 3000 >> "$ROOT/logs/openwebui.log" 2>&1 &)
+# Keep the WSL session alive briefly so setsid can fully detach before a
+# one-shot `wsl -e` exits — otherwise the session kills the child.
+sleep 3
 echo "Open WebUI starting on http://localhost:3000 (backends: $HOSTIP:8081 + :18181)"

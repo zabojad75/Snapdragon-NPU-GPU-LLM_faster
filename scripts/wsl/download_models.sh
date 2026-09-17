@@ -1,6 +1,7 @@
 #!/bin/bash
 # Download Q4_0/Q5_0 GGUF models from HuggingFace for Adreno GPU serving.
-# Resumable per-file; re-runs skip completed files.
+# Resumable per-file (curl -C -); re-runs skip files that match the remote size,
+# so an interrupted download is finished instead of skipped.
 # Sizes (Q4-ish): 1.5B ~1GB | 8B ~5GB | 12B ~7GB | 20B ~12GB | 30B ~17GB
 set -u
 ROOT="${LLMNPU_ROOT:-$HOME/llmnpu}"
@@ -17,11 +18,14 @@ mkdir -p "$DEST"
 LOG="$ROOT/logs/downloads.log"
 
 dl () {
-  local url="$1" out="$2"
-  if [ -s "$DEST/$out" ]; then
-    echo "[skip] $out exists" | tee -a "$LOG"
+  local url="$1" out="$2" have total
+  have=$(stat -c %s "$DEST/$out" 2>/dev/null || echo 0)
+  total=$(curl -sIL "$url" | tr -d '\r' | awk 'tolower($1)=="content-length:" {n=$2} END {print n+0}')
+  if [ "$total" -gt 0 ] && [ "$have" -ge "$total" ]; then
+    echo "[skip] $out complete ($have bytes)" | tee -a "$LOG"
     return 0
   fi
+  [ "$have" -gt 0 ] && echo "[resume] $out at $have / $total bytes" | tee -a "$LOG"
   echo "[get ] $out" | tee -a "$LOG"
   curl -L --fail -C - --retry 60 --retry-all-errors --retry-delay 3 \
        --connect-timeout 20 --progress-bar -o "$DEST/$out" "$url" 2>>"$LOG" \

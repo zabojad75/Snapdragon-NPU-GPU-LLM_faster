@@ -1,7 +1,8 @@
 @echo off
 REM Serve a GGUF model on Adreno GPU via llama-server (OpenAI-compatible API on :8081)
 REM Usage: serve_gpu.bat [model-key] [ctx-size]
-REM   model-key: 30b | 20b (default) | 8b | 12b | 1.5b
+REM   model-key: 30b | 27b | 20b (default) | 8b | 12b | 1.5b
+REM   (aliases = file name without the quant suffix, same as the panel)
 REM   ctx-size:  default 16384
 REM The server runs with NO window (no console, no taskbar entry).
 setlocal
@@ -18,6 +19,7 @@ if /I "%1"=="8b"   set MODEL=%MODELS%\qwen3-8b-Q5_0.gguf& set ALIAS=qwen3-8b
 if /I "%1"=="12b"  set MODEL=%MODELS%\mistral-nemo-12b-Q4_0.gguf& set ALIAS=mistral-nemo-12b
 if /I "%1"=="1.5b" set MODEL=%MODELS%\qwen2.5-coder-1.5b-Q4_0.gguf& set ALIAS=qwen2.5-coder-1.5b
 if /I "%1"=="30b"  set MODEL=%MODELS%\qwen3-coder-30b-Q4_0.gguf& set ALIAS=qwen3-coder-30b
+if /I "%1"=="27b"  set MODEL=%MODELS%\Qwen3.8-27B-Q4_0.gguf& set ALIAS=Qwen3.8-27B
 if "%MODEL%"=="" set MODEL=%MODELS%\gpt-oss-20b-Q4_0.gguf& set ALIAS=gpt-oss-20b
 
 REM HIDDEN=1 marks the second pass, which actually runs the server
@@ -35,5 +37,6 @@ ping -n 3 127.0.0.1 >nul
 if not exist "%BASE%\logs" mkdir "%BASE%\logs"
 
 set PATH=%BASE%\pkg-opencl\bin;%PATH%
-llama-server -m "%MODEL%" --alias %ALIAS% -ngl 99 -c %CTX% --host 0.0.0.0 --port %PORT% --no-webui -fa on > "%BASE%\logs\llama_server.log" 2>&1
+REM -t 4 + ngram-mod speculation: measured best on X2 Elite (docs/BENCHMARKS.md)
+llama-server -m "%MODEL%" --alias %ALIAS% -ngl 99 -c %CTX% --host 0.0.0.0 --port %PORT% --no-webui -fa on -t 4 --spec-type ngram-mod > "%BASE%\logs\llama_server.log" 2>&1
 endlocal
