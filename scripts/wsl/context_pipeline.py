@@ -672,10 +672,16 @@ def main():
         npu_queue = resplit(chunks, npu.usable_tokens())
         gpu_calls = []
 
-    n_npu = len(npu_queue)
+    # Pack small NPU chunks too (mirrors the GPU packing above): the last
+    # chunk of every file is usually well under the 4K budget, so packing
+    # cuts call count - and with it the fixed per-call --npu-cooldown - down
+    # to what the token volume actually needs instead of the chunk count.
+    npu_calls = pack_small_chunks(npu_queue, npu.usable_tokens()) if npu else []
+
+    n_npu = sum(len(call) for call in npu_calls)
     n_gpu_chunks = sum(len(call) for call in gpu_calls)
-    print(f"plan: {n_npu} chunk(s) -> NPU, {n_gpu_chunks} chunk(s) in "
-          f"{len(gpu_calls)} packed call(s) -> GPU")
+    print(f"plan: {n_npu} chunk(s) in {len(npu_calls)} packed call(s) -> NPU, "
+          f"{n_gpu_chunks} chunk(s) in {len(gpu_calls)} packed call(s) -> GPU")
 
     if a.dry_run:
         for path in sorted({c["path"] for c in chunks}):
@@ -687,11 +693,12 @@ def main():
     t_start = time.time()
     summaries = {}       # plan position -> summary (stable order for reduce)
 
-    def run_npu(c):
+    def run_npu(call):
         time.sleep(a.npu_cooldown)   # rest between sustained NPU calls: this
                                      # SoC has bugchecked (0x18b) under long
                                      # NPU+GPU load - see docs/QUICKREF.md
-        return map_chunk(npu, c["text"], a.question, a.map_max_tokens, a.temp)
+        text = "\n\n".join(c["text"] for c in call)
+        return map_chunk(npu, text, a.question, a.map_max_tokens, a.temp)
 
     def run_gpu(call):
         text = "\n\n".join(c["text"] for c in call)
@@ -714,7 +721,9 @@ def main():
     reused = 0
 
     def drain(executor, jobs, lane_name):
-        """Run jobs (position, zero-arg callable, tag, key, chunk), print progress."""
+        """Run jobs (position, zero-arg callable, tag, key, chunk), print progress.
+        `chunk` is only used for the NPU too-long requeue: there it's the
+        packed call (list of chunk dicts) that was sent; GPU jobs pass None."""
         futs = {}
         for pos, fn, tag, key, chunk in jobs:
             futs[executor.submit(fn)] = (lane_name, pos, tag, key, chunk)
@@ -726,7 +735,7 @@ def main():
                 summary = fut.result()
             except TooLong:
                 if gpu is not None and lane_name_ == "npu":
-                    too_long.append((position, chunk))
+                    too_long.append((position, chunk))   # chunk = the packed call (list)
                     print(f"  [{done}/{len(futs)}] {lane_name_} {tag}: too long "
                           f"for the NPU, requeued for the GPU phase")
                 else:
@@ -743,18 +752,20 @@ def main():
             print(f"  [{done}/{len(futs)}] {lane_name_} {tag}: "
                   f"{summary[:60]!r}...")
 
-    npu_jobs = []          # (position, zero-arg callable, tag, key, chunk)
+    npu_jobs = []          # (position, zero-arg callable, tag, key, call)
     gpu_jobs = []
     pos = 0
     if npu:
-        for c in npu_queue:
+        for call in npu_calls:
             pos += 1
-            key = chunk_key(npu.model, a.question, c["text"])
+            text = "\n\n".join(c["text"] for c in call)
+            key = chunk_key(npu.model, a.question, text)
             if key in done_keys:
                 summaries[pos] = done_keys[key]
                 reused += 1
                 continue
-            npu_jobs.append((pos, (lambda c=c: run_npu(c)), c["id"], key, c))
+            tag = "+".join(c["id"] for c in call)
+            npu_jobs.append((pos, (lambda call=call: run_npu(call)), tag, key, call))
     if gpu:
         for call in gpu_calls:
             pos += 1
@@ -775,8 +786,8 @@ def main():
             drain(ex, npu_jobs, "npu")
     # chunks the NPU refused join the GPU phase, keeping their plan position
     # (fractional sub-positions if the GPU budget forces a re-split)
-    for position, c in too_long:
-        parts = resplit([c], gpu.usable_tokens())
+    for position, call in too_long:
+        parts = resplit(call, gpu.usable_tokens())
         for j, part in enumerate(parts):
             sub = position + j / (len(parts) + 1)
             key = chunk_key(gpu.model, a.question, part["text"])

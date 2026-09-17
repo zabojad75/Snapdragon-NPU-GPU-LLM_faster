@@ -98,6 +98,20 @@ by default.
 - NPU strength is power efficiency (long unplugged sessions), not speed vs GPU.
 - First request after server start takes ~30 s (model load on demand).
 
+## context_pipeline.py: NPU call packing (2026-09-17)
+
+The map phase used to send one NPU call per chunk, each preceded by the
+fixed `--npu-cooldown` (default 2 s). Real corpora have many chunks well
+under the NPU's ~3.7K usable budget (the last chunk of every file), so this
+burned round trips and cooldown time proportional to chunk *count* instead
+of token *volume*. NPU chunks are now packed into calls up to the budget,
+the same way the GPU phase already packs — verified on a 2-file/6-chunk
+doc set (`--chunk-tokens 800`): 6 chunks -> **2 packed NPU calls** instead
+of 6 (map phase completed correctly, checkpoint keys and the too-long->GPU
+requeue path both cover packed calls). Cuts NPU round trips and cooldown
+dead time roughly by the average pack size, with no effect on GPU-only or
+NPU-only runs where chunks are already near the budget.
+
 ## Memory footprint (48 GB machine)
 
 | Model | llama-server working set |
