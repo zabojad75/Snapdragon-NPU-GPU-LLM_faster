@@ -246,6 +246,12 @@ body {
   margin-bottom: 12px;
 }
 
+.chips {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
 .card-title {
   font-weight: 600;
   font-size: 14px;
@@ -448,7 +454,10 @@ pre {
       <div class="card" id="cardGpu">
         <div class="card-head">
           <span class="card-title">GPU · Adreno</span>
-          <span class="chip" id="gpuChip">–</span>
+          <span class="chips">
+            <span class="chip" id="gpuChip">–</span>
+            <span class="chip" id="gpuCtxChip" title="loaded context">–</span>
+          </span>
         </div>
         <div class="row">
           <select id="model" class="mono"></select>
@@ -471,7 +480,6 @@ pre {
           <button id="btnStop" class="btn danger">Stop</button>
           <button id="btnDel" class="btn danger">Delete</button>
         </div>
-        <div class="label mono" id="gpuDetail">–</div>
       </div>
       <div class="card" id="cardNpu">
         <div class="card-head">
@@ -579,6 +587,7 @@ let lastState = {gpu:'?', npu:'?'};
 let lastReflected = null;
 let lastRamSeen = null;
 let lastEstKey = '';
+let lastGpuHolds = null;
 
 async function poll() {
   try { S = await api('/status'); } catch { return; }
@@ -591,6 +600,26 @@ async function poll() {
   else if (g.state === 'stopping') gpuLabel = 'stopping…';
   else if (g.state === 'crashed') gpuLabel = 'CRASHED';
   chip($('gpuChip'), g.state, gpuLabel);
+  
+  // Update ctx chip
+  const gpuHoldsNow = (g.state === 'ready' || g.state === 'busy');
+  if (lastGpuHolds !== null && gpuHoldsNow !== lastGpuHolds) {
+    // GPU holds membership changed, trigger a refresh
+    ctxChanged(true);
+  }
+  lastGpuHolds = gpuHoldsNow;
+  
+  // Update ctx chip with loaded context
+  if (g.model && g.ctx) {
+    // Format the context size as K notation (16384 → "16K")
+    const ctxValue = g.ctx;
+    const ctxLabel = (ctxValue >= 1024 && ctxValue % 1024 === 0) ? 
+      (ctxValue/1024)+'K' : 
+      ''+ctxValue;
+    chip($('gpuCtxChip'), g.state, ctxLabel);
+  } else {
+    chip($('gpuCtxChip'), 'off', '–');
+  }
   
   let npuLabel = n.state;
   if (n.state === 'ready') npuLabel = 'ready';
@@ -615,7 +644,6 @@ async function poll() {
   $('clock').textContent = S.now;
   $('gwInfo').textContent = 'gateway ' + S.gateway + ' · NPU ' + (S.npu.loaded ? 'model loaded' : 'on-demand');
   
-  $('gpuDetail').textContent = (g.model ? g.model : 'no model') + (g.toks ? ' · '+g.toks.toFixed(1)+' t/s' : '');
   $('npuDetail').textContent = n.detail || '–';
   $('gpuLog').textContent = (g.log_tail || []).join('\n');
   $('npuLog').textContent = (n.log_tail || []).join('\n');
@@ -649,9 +677,12 @@ async function poll() {
   }
   
   const estKey = $('model').value + '@' + $('ctx').value;
-  if (estKey !== lastEstKey || (S.ram_free != null && lastRamSeen !== S.ram_free)) {
+  const ramChanged = (S.ram_free != null && lastRamSeen !== S.ram_free);
+  const gpuStateChanged = (S.gpu.state !== lastState.gpu);
+  
+  if (estKey !== lastEstKey || ramChanged || gpuStateChanged) {
     lastRamSeen = S.ram_free;
-    ctxChanged();
+    ctxChanged(ramChanged || gpuStateChanged);
   }
   
   renderJobs();
@@ -720,7 +751,7 @@ $('themeBtn').addEventListener('click', toggleTheme);
 $('btnChat').addEventListener('click', () => switchView('chat'));
 $('btnDash').addEventListener('click', () => switchView('dash'));
 $('model').addEventListener('change', saveSel);
-$('ctx').addEventListener('change', ctxChanged);
+$('ctx').addEventListener('change', () => ctxChanged());
 
 const initial = localStorage.getItem('llmnpu-theme') || (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
 applyTheme(initial);
@@ -819,32 +850,49 @@ async function npuRestart() {
   }
 }
 
-function ctxChanged() {
+let estSeq = 0;
+
+function ctxChanged(force = false) {
   const model = $('model').value;
   const ctx = $('ctx').value;
   if (!model) return;
   const key = model + '@' + ctx;
-  if (key === lastEstKey) return;
+  if (key === lastEstKey && !force) return;
   lastEstKey = key;
   const sel = $('ctx');
   const hint = $('ctxHint');
   sel.className = '';
   hint.className = '';
   hint.textContent = '~';
+  const seq = ++estSeq;
   async function run() {
     try {
       const e = await api('/ctx/estimate?model=' + encodeURIComponent(model) + '&ctx=' + ctx);
+      // Check if we're still the latest sequence
+      if (seq !== estSeq) return;
+      
       if (e.need_gb == null) {
         sel.className = '';
         hint.className = '';
         hint.textContent = '~';
+        // Clear all option classes when no estimate is available
+        const options = $('ctx').options;
+        for (let i = 0; i < options.length; i++) {
+          options[i].className = '';
+        }
         return;
       }
+      
       const free = (S && S.ram_free != null) ? S.ram_free : null;
       let cls, txt;
       if (free == null) {
         cls = '';
         txt = 'needs ~' + e.need_gb + ' GB';
+        // Clear all option classes when no free RAM is available
+        const options = $('ctx').options;
+        for (let i = 0; i < options.length; i++) {
+          options[i].className = '';
+        }
       } else {
         const gpuHolds = (S.gpu.state === 'ready' || S.gpu.state === 'busy');
         const avail = gpuHolds ? free + (S.gpu_ram || 0) : free;
@@ -859,6 +907,28 @@ function ctxChanged() {
           cls = 'ok';
           txt = '✓ needs ~' + e.need_gb + ' GB — fits';
         }
+        
+        // Apply per-option coloring based on the components from the API
+        if (e.weights_gb != null && e.kv_gb_per_tok != null) {
+          const options = $('ctx').options;
+          const weights_gb = e.weights_gb;
+          const overhead_gb = e.overhead_gb;
+          const kv_gb_per_tok = e.kv_gb_per_tok;
+          
+          for (let i = 0; i < options.length; i++) {
+            const ctxValue = parseInt(options[i].value);
+            const need = weights_gb + overhead_gb + kv_gb_per_tok * ctxValue;
+            const margin = avail - need;
+            
+            if (margin < 1.5) {
+              options[i].className = 'err';
+            } else if (margin < 6) {
+              options[i].className = 'warn';
+            } else {
+              options[i].className = 'ok';
+            }
+          }
+        }
       }
       sel.className = cls;
       hint.className = cls;
@@ -866,6 +936,11 @@ function ctxChanged() {
     } catch (e) {
       sel.className = '';
       hint.textContent = '';
+      // Clear all option classes on error
+      const options = $('ctx').options;
+      for (let i = 0; i < options.length; i++) {
+        options[i].className = '';
+      }
     }
   }
   run();
@@ -898,10 +973,12 @@ const QUANTS = ["Q4_0","Q4_1","Q5_0","Q5_1","Q8_0","Q3_K_M","Q4_K_M","Q5_K_M","Q
 function renderModelsList() {
   const modelNames = S.models.map(m => m.name);
   const currentOptions = Array.from($('qModel').options).map(o => o.value);
-  if (JSON.stringify(modelNames) === JSON.stringify(currentOptions)) return;
-
-  const modelOptions = S.models.map(m => `<option value="${esc(m.name)}">${esc(m.name)}</option>`).join('');
-  $('qModel').innerHTML = modelOptions;
+  // rebuild the dropdown only when names change (keeps the selection);
+  // sizes below must refresh every poll so download progress moves
+  if (JSON.stringify(modelNames) !== JSON.stringify(currentOptions)) {
+    const modelOptions = S.models.map(m => `<option value="${esc(m.name)}">${esc(m.name)}</option>`).join('');
+    $('qModel').innerHTML = modelOptions;
+  }
 
   const modelLines = S.models.map(m => {
     const sizeGb = (m.size / 1e9).toFixed(2);

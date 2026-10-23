@@ -41,7 +41,10 @@
       <div class="card" id="cardGpu">
         <div class="card-head">
           <span class="card-title">GPU · Adreno</span>
-          <span class="chip" id="gpuChip">–</span>
+          <span class="chips">
+            <span class="chip" id="gpuChip">–</span>
+            <span class="chip" id="gpuCtxChip" title="loaded context">–</span>
+          </span>
         </div>
         <div class="row">
           <select id="model" class="mono"></select>
@@ -64,7 +67,6 @@
           <button id="btnStop" class="btn danger">Stop</button>
           <button id="btnDel" class="btn danger">Delete</button>
         </div>
-        <div class="label mono" id="gpuDetail">–</div>
       </div>
       <div class="card" id="cardNpu">
         <div class="card-head">

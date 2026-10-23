@@ -78,32 +78,49 @@ async function npuRestart() {
   }
 }
 
-function ctxChanged() {
+let estSeq = 0;
+
+function ctxChanged(force = false) {
   const model = $('model').value;
   const ctx = $('ctx').value;
   if (!model) return;
   const key = model + '@' + ctx;
-  if (key === lastEstKey) return;
+  if (key === lastEstKey && !force) return;
   lastEstKey = key;
   const sel = $('ctx');
   const hint = $('ctxHint');
   sel.className = '';
   hint.className = '';
   hint.textContent = '~';
+  const seq = ++estSeq;
   async function run() {
     try {
       const e = await api('/ctx/estimate?model=' + encodeURIComponent(model) + '&ctx=' + ctx);
+      // Check if we're still the latest sequence
+      if (seq !== estSeq) return;
+      
       if (e.need_gb == null) {
         sel.className = '';
         hint.className = '';
         hint.textContent = '~';
+        // Clear all option classes when no estimate is available
+        const options = $('ctx').options;
+        for (let i = 0; i < options.length; i++) {
+          options[i].className = '';
+        }
         return;
       }
+      
       const free = (S && S.ram_free != null) ? S.ram_free : null;
       let cls, txt;
       if (free == null) {
         cls = '';
         txt = 'needs ~' + e.need_gb + ' GB';
+        // Clear all option classes when no free RAM is available
+        const options = $('ctx').options;
+        for (let i = 0; i < options.length; i++) {
+          options[i].className = '';
+        }
       } else {
         const gpuHolds = (S.gpu.state === 'ready' || S.gpu.state === 'busy');
         const avail = gpuHolds ? free + (S.gpu_ram || 0) : free;
@@ -118,6 +135,28 @@ function ctxChanged() {
           cls = 'ok';
           txt = '✓ needs ~' + e.need_gb + ' GB — fits';
         }
+        
+        // Apply per-option coloring based on the components from the API
+        if (e.weights_gb != null && e.kv_gb_per_tok != null) {
+          const options = $('ctx').options;
+          const weights_gb = e.weights_gb;
+          const overhead_gb = e.overhead_gb;
+          const kv_gb_per_tok = e.kv_gb_per_tok;
+          
+          for (let i = 0; i < options.length; i++) {
+            const ctxValue = parseInt(options[i].value);
+            const need = weights_gb + overhead_gb + kv_gb_per_tok * ctxValue;
+            const margin = avail - need;
+            
+            if (margin < 1.5) {
+              options[i].className = 'err';
+            } else if (margin < 6) {
+              options[i].className = 'warn';
+            } else {
+              options[i].className = 'ok';
+            }
+          }
+        }
       }
       sel.className = cls;
       hint.className = cls;
@@ -125,6 +164,11 @@ function ctxChanged() {
     } catch (e) {
       sel.className = '';
       hint.textContent = '';
+      // Clear all option classes on error
+      const options = $('ctx').options;
+      for (let i = 0; i < options.length; i++) {
+        options[i].className = '';
+      }
     }
   }
   run();

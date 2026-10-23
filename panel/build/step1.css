@@ -239,6 +239,12 @@ body {
   margin-bottom: 12px;
 }
 
+.chips {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
 .card-title {
   font-weight: 600;
   font-size: 14px;

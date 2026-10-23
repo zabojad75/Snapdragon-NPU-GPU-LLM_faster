@@ -562,7 +562,26 @@ def _derive(which, up, busy, log_mtime, now, proc_alive):
 # KV bytes/token parsed from the GGUF header: layers × kv_heads × head_dim,
 # each fp16 (2 bytes) for K and V. llama-server uses a unified KV cache
 # (kv_unified = true), so ctx is the total across slots — no per-slot factor.
+_GPU_OVERHEAD_GB = 2.5
 _GGUF_CACHE = {}
+
+def _gpu_ram_parts(model_file):
+    """Return (weights_gb, kv_gb_per_tok) or (None, None) if not estimable."""
+    try:
+        weights = (MODELS / model_file).stat().st_size
+    except Exception:
+        return None, None
+    kvpt = _gguf_kv_per_token(MODELS / model_file)
+    if kvpt is None:
+        return None, None
+    return weights/1e9, kvpt/1e9
+
+def _gpu_ram_need(model_file, ctx):
+    """Estimate RAM (GB) needed to serve model_file at ctx tokens."""
+    weights_gb, kv_gb_per_tok = _gpu_ram_parts(model_file)
+    if weights_gb is None:
+        return None
+    return weights_gb + _GPU_OVERHEAD_GB + kv_gb_per_tok * ctx
 
 def _gguf_kv_per_token(path):
     """Bytes of KV cache per token, parsed from the GGUF header (cached).
@@ -582,11 +601,19 @@ def _gguf_kv_per_token(path):
             et, = struct.unpack("<I", f.read(4))
             n,  = struct.unpack("<Q", f.read(8))
             if et == 8:
+                # String array - skip elements
                 for _ in range(n):
                     sl, = struct.unpack("<Q", f.read(8)); f.read(sl)
+                return None
             else:
-                f.read(n * SIZES[et])
-            return None
+                # Non-string array - read elements as list
+                elements = []
+                for _ in range(n):
+                    if et in SIZES:
+                        data = f.read(SIZES[et])
+                        if data:
+                            elements.append(struct.unpack(FMTS[et], data)[0])
+                return elements if elements else None
         return struct.unpack(FMTS[t], f.read(SIZES[t]))[0]
     try:
         with open(path, "rb") as f:
@@ -605,29 +632,43 @@ def _gguf_kv_per_token(path):
                 hdr[key] = _read_value(f, t)
             arch = (hdr.get("general.architecture") or b"").decode().lower()
             layers = hdr.get(f"{arch}.block_count") or 0
-            heads  = hdr.get(f"{arch}.attention.head_count_kv") or 0
+            # Handle head_count_kv as either scalar or array
+            hkv = hdr.get(f"{arch}.attention.head_count_kv")
+            if hkv is None:
+                # If head_count_kv is missing, fall back to head_count (MHA models)
+                heads = hdr.get(f"{arch}.attention.head_count") or 0
+            elif isinstance(hkv, list) and len(hkv) > 0:
+                # If it's an array, we need to compute per-layer values
+                # For now, use the first value or sum for a rough estimate
+                # This handles Gemma4's per-layer head_count_kv array
+                if len(hkv) == layers:
+                    # Per-layer array: compute total sum
+                    heads = sum(hkv)
+                else:
+                    # Array of different length - fall back to first element or max
+                    heads = hkv[0] if hkv else 0
+            else:
+                # Scalar value
+                heads = hkv or 0
+            
             kvh = hdr.get(f"{arch}.attention.key_length")
             if kvh is None and heads:
                 emb = hdr.get(f"{arch}.embedding_length") or 0
                 hc  = hdr.get(f"{arch}.attention.head_count") or 0
                 kvh = emb // hc if hc else 0     # default head dim
+            # kvh may also be a per-layer array (handle like hkv)
+            if isinstance(kvh, list):
+                kvh = kvh[0] if kvh else 0
             if layers and heads and kvh:
-                val = layers * kvh * heads * 2 * 2   # K+V, fp16
+                if isinstance(hkv, list) and len(hkv) == layers and len(hkv) > 0:
+                    # Per-layer KV heads: sum over layers of hkv[l] * kvh * 4
+                    val = kvh * sum(hkv) * 2 * 2   # K+V, fp16
+                else:
+                    val = layers * kvh * heads * 2 * 2   # K+V, fp16
     except Exception:
         val = None
     _GGUF_CACHE[path] = val
     return val
-
-def _gpu_ram_need(model_file, ctx):
-    """Estimate RAM (GB) needed to serve model_file at ctx tokens."""
-    try:
-        weights = (MODELS / model_file).stat().st_size
-    except Exception:
-        return None
-    kvpt = _gguf_kv_per_token(MODELS / model_file)
-    if kvpt is None:
-        return None
-    return (weights + kvpt * ctx) / 1e9 + 2.5   # + llama-server overhead
 
 # the ctx selected at the last GPU launch (for the UI's RAM hint and restart)
 LAST_GPU = {"model": None, "ctx": None}
@@ -727,7 +768,11 @@ def _poller():
         # poll slower when nothing is changing: fewer Windows process launches
         steady = (INTENT["gpu"] is None and INTENT["npu"] is None
                   and gstate in ("ready", "off") and nstate in ("ready", "off"))
-        WAKE.wait(POLL_IDLE_S if steady else POLL_FAST_S)
+        try:
+            WAKE.wait(POLL_IDLE_S if steady else POLL_FAST_S)
+        except:
+            # allow thread to terminate gracefully on shutdown
+            break
         WAKE.clear()
 
 # ---------------------------------------------------------------- quantize
@@ -795,8 +840,15 @@ def status():
 def ctx_estimate(model: str, ctx: int):
     f = _model_path(model)
     ctx = _safe_ctx(ctx)
-    need = _gpu_ram_need(f.name, ctx)
-    return {"model": f.name, "ctx": ctx, "need_gb": None if need is None else round(need, 1)}
+    # Also return components to enable per-option fit checking in the frontend
+    try:
+        need = _gpu_ram_need(f.name, ctx)
+        weights_gb, kv_gb_per_tok = _gpu_ram_parts(f.name)
+        if kv_gb_per_tok is None:
+            return {"model": f.name, "ctx": ctx, "need_gb": None, "weights_gb": None, "overhead_gb": None, "kv_gb_per_tok": None}
+        return {"model": f.name, "ctx": ctx, "need_gb": None if need is None else round(need, 1), "weights_gb": weights_gb, "overhead_gb": _GPU_OVERHEAD_GB, "kv_gb_per_tok": kv_gb_per_tok}
+    except Exception:
+        return {"model": f.name, "ctx": ctx, "need_gb": None, "weights_gb": None, "overhead_gb": None, "kv_gb_per_tok": None}
 
 # ---- GPU lifecycle
 @api.post("/gpu/start", dependencies=write)

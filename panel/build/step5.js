@@ -3,10 +3,12 @@ const QUANTS = ["Q4_0","Q4_1","Q5_0","Q5_1","Q8_0","Q3_K_M","Q4_K_M","Q5_K_M","Q
 function renderModelsList() {
   const modelNames = S.models.map(m => m.name);
   const currentOptions = Array.from($('qModel').options).map(o => o.value);
-  if (JSON.stringify(modelNames) === JSON.stringify(currentOptions)) return;
-
-  const modelOptions = S.models.map(m => `<option value="${esc(m.name)}">${esc(m.name)}</option>`).join('');
-  $('qModel').innerHTML = modelOptions;
+  // rebuild the dropdown only when names change (keeps the selection);
+  // sizes below must refresh every poll so download progress moves
+  if (JSON.stringify(modelNames) !== JSON.stringify(currentOptions)) {
+    const modelOptions = S.models.map(m => `<option value="${esc(m.name)}">${esc(m.name)}</option>`).join('');
+    $('qModel').innerHTML = modelOptions;
+  }
 
   const modelLines = S.models.map(m => {
     const sizeGb = (m.size / 1e9).toFixed(2);

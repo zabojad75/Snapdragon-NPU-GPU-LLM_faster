@@ -12,6 +12,7 @@ let lastState = {gpu:'?', npu:'?'};
 let lastReflected = null;
 let lastRamSeen = null;
 let lastEstKey = '';
+let lastGpuHolds = null;
 
 async function poll() {
   try { S = await api('/status'); } catch { return; }
@@ -24,6 +25,26 @@ async function poll() {
   else if (g.state === 'stopping') gpuLabel = 'stopping…';
   else if (g.state === 'crashed') gpuLabel = 'CRASHED';
   chip($('gpuChip'), g.state, gpuLabel);
+  
+  // Update ctx chip
+  const gpuHoldsNow = (g.state === 'ready' || g.state === 'busy');
+  if (lastGpuHolds !== null && gpuHoldsNow !== lastGpuHolds) {
+    // GPU holds membership changed, trigger a refresh
+    ctxChanged(true);
+  }
+  lastGpuHolds = gpuHoldsNow;
+  
+  // Update ctx chip with loaded context
+  if (g.model && g.ctx) {
+    // Format the context size as K notation (16384 → "16K")
+    const ctxValue = g.ctx;
+    const ctxLabel = (ctxValue >= 1024 && ctxValue % 1024 === 0) ? 
+      (ctxValue/1024)+'K' : 
+      ''+ctxValue;
+    chip($('gpuCtxChip'), g.state, ctxLabel);
+  } else {
+    chip($('gpuCtxChip'), 'off', '–');
+  }
   
   let npuLabel = n.state;
   if (n.state === 'ready') npuLabel = 'ready';
@@ -48,7 +69,6 @@ async function poll() {
   $('clock').textContent = S.now;
   $('gwInfo').textContent = 'gateway ' + S.gateway + ' · NPU ' + (S.npu.loaded ? 'model loaded' : 'on-demand');
   
-  $('gpuDetail').textContent = (g.model ? g.model : 'no model') + (g.toks ? ' · '+g.toks.toFixed(1)+' t/s' : '');
   $('npuDetail').textContent = n.detail || '–';
   $('gpuLog').textContent = (g.log_tail || []).join('\n');
   $('npuLog').textContent = (n.log_tail || []).join('\n');
@@ -82,9 +102,12 @@ async function poll() {
   }
   
   const estKey = $('model').value + '@' + $('ctx').value;
-  if (estKey !== lastEstKey || (S.ram_free != null && lastRamSeen !== S.ram_free)) {
+  const ramChanged = (S.ram_free != null && lastRamSeen !== S.ram_free);
+  const gpuStateChanged = (S.gpu.state !== lastState.gpu);
+  
+  if (estKey !== lastEstKey || ramChanged || gpuStateChanged) {
     lastRamSeen = S.ram_free;
-    ctxChanged();
+    ctxChanged(ramChanged || gpuStateChanged);
   }
   
   renderJobs();
@@ -153,7 +176,7 @@ $('themeBtn').addEventListener('click', toggleTheme);
 $('btnChat').addEventListener('click', () => switchView('chat'));
 $('btnDash').addEventListener('click', () => switchView('dash'));
 $('model').addEventListener('change', saveSel);
-$('ctx').addEventListener('change', ctxChanged);
+$('ctx').addEventListener('change', () => ctxChanged());
 
 const initial = localStorage.getItem('llmnpu-theme') || (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
 applyTheme(initial);
