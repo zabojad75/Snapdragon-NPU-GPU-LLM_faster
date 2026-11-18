@@ -457,6 +457,22 @@ def _npu_loaded():
     return _NPU_SCAN["loaded"]
 
 def _free_ram_gb():
+    """Available RAM in GB (includes standby/file-cache pages reclaimable on Windows).
+    Uses PerfCounter AvailableMBytes, not FreePhysicalMemory — weights are mmap'd so
+    standby counts as usable when estimating whether a GGUF fits."""
+    # Perf counter is the canonical "Available" metric; handle multiple samples + empties
+    try:
+        out = subprocess.run(
+            [POWERSHELL, "-NoProfile", "-Command",
+             "$s=(Get-Counter '\\Memory\\Available MBytes').CounterSamples.CookedValue;"
+             "if($s){[math]::Round(($s|Measure-Object -Average -ErrorAction SilentlyContinue).Average/1KB,1)}"],
+            capture_output=True, text=True, timeout=20)
+        txt = out.stdout.strip()
+        if txt:
+            v = float(txt)
+            if v: return v
+    except Exception:
+        pass
     try:
         out = subprocess.run(
             [POWERSHELL, "-NoProfile", "-Command",
@@ -670,6 +686,9 @@ def _gguf_kv_per_token(path):
     _GGUF_CACHE[path] = val
     return val
 
+# observed RAM (GB) the current GPU model actually occupies; calibrated from delta
+_GPU_OBS_HOLD_GB = None
+_GPU_RAM_BEFORE = None
 # the ctx selected at the last GPU launch (for the UI's RAM hint and restart)
 LAST_GPU = {"model": None, "ctx": None}
 
@@ -748,7 +767,18 @@ def _poller():
             last_ram = now
             ram_free = _free_ram_gb() or ram_free
 
-        gpu_ram = _gpu_ram_need(LAST_GPU["model"], LAST_GPU["ctx"]) if LAST_GPU["model"] else None
+        # observed calibration: measure RAM delta across GPU load
+        global _GPU_OBS_HOLD_GB, _GPU_RAM_BEFORE
+        if gup and _GPU_RAM_BEFORE is not None and ram_free is not None and _GPU_OBS_HOLD_GB is None:
+            delta = _GPU_RAM_BEFORE - ram_free
+            if delta > 0.3:  # ignore tiny noise; valid delta is several GB
+                _GPU_OBS_HOLD_GB = round(delta, 1)
+            _GPU_RAM_BEFORE = None
+        elif not gup:
+            _GPU_OBS_HOLD_GB = None
+
+        est_gpu_ram = _gpu_ram_need(LAST_GPU["model"], LAST_GPU["ctx"]) if LAST_GPU["model"] else None
+        gpu_ram = _GPU_OBS_HOLD_GB if _GPU_OBS_HOLD_GB is not None else est_gpu_ram
 
         with CACHE_LOCK:
             CACHE.update({
@@ -859,12 +889,19 @@ def gpu_start(model: str, ctx: int = 16384, alias: str = ""):
     alias = _safe_alias(alias, f.name)
     INTENT["gpu"] = {"action": "start", "model": f.name, "since": time.time()}
     LAST_GPU["model"], LAST_GPU["ctx"] = f.name, ctx
+    # snapshot RAM for observed calibration; poller diffs it when new server appears
+    global _GPU_RAM_BEFORE, _GPU_OBS_HOLD_GB
+    with CACHE_LOCK:
+        _GPU_RAM_BEFORE = CACHE.get("ram_free")
+    _GPU_OBS_HOLD_GB = None
     start_gpu(f.name, ctx, alias, _bump_action("gpu"))
     return {"ok": True, "model": f.name, "alias": alias, "ctx": ctx}
 
 @api.post("/gpu/stop", dependencies=write)
 def gpu_stop():
+    global _GPU_OBS_HOLD_GB
     INTENT["gpu"] = {"action": "stop", "since": time.time()}
+    _GPU_OBS_HOLD_GB = None
     _bump_action("gpu")
     _taskkill_async("llama-server.exe")
     return {"ok": True}
@@ -886,6 +923,10 @@ def gpu_restart(model: str = "", ctx: int | None = None, alias: str = ""):
     alias = _safe_alias(alias, f.name)
     INTENT["gpu"] = {"action": "restart", "model": f.name, "since": time.time()}
     LAST_GPU["model"], LAST_GPU["ctx"] = f.name, ctx
+    global _GPU_RAM_BEFORE, _GPU_OBS_HOLD_GB
+    with CACHE_LOCK:
+        _GPU_RAM_BEFORE = CACHE.get("ram_free")
+    _GPU_OBS_HOLD_GB = None
     start_gpu(f.name, ctx, alias, _bump_action("gpu"))
     return {"ok": True, "model": f.name, "alias": alias, "ctx": ctx}
 

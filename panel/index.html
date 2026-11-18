@@ -884,11 +884,21 @@ function ctxChanged(force = false) {
       }
       
       const free = (S && S.ram_free != null) ? S.ram_free : null;
+      const ctxVal = parseInt(ctx, 10);
+      const alreadyLoaded = S && S.gpu && S.gpu.model && (S.gpu.model === model)
+        && (S.gpu.ctx === ctxVal) && (S.gpu.state === 'ready' || S.gpu.state === 'busy');
       let cls, txt;
-      if (free == null) {
+      if (alreadyLoaded) {
+        cls = 'ok';
+        txt = '✓ loaded — ' + free.toFixed(0) + ' GB available';
+        const options = $('ctx').options;
+        for (let i = 0; i < options.length; i++) {
+          const v = parseInt(options[i].value, 10);
+          options[i].className = (v === ctxVal) ? 'ok' : '';
+        }
+      } else if (free == null) {
         cls = '';
         txt = 'needs ~' + e.need_gb + ' GB';
-        // Clear all option classes when no free RAM is available
         const options = $('ctx').options;
         for (let i = 0; i < options.length; i++) {
           options[i].className = '';
@@ -897,9 +907,12 @@ function ctxChanged(force = false) {
         const gpuHolds = (S.gpu.state === 'ready' || S.gpu.state === 'busy');
         const avail = gpuHolds ? free + (S.gpu_ram || 0) : free;
         const margin = avail - e.need_gb;
+        const freed = gpuHolds && (S.gpu_ram || 0) > 0;
         if (margin < 1.5) {
           cls = 'err';
-          txt = '✗ needs ~' + e.need_gb + ' GB — will not fit (free ' + free.toFixed(0) + ', swap frees ~' + (S.gpu_ram || 0).toFixed(0) + ' GB)';
+          txt = freed
+            ? '✗ needs ~' + e.need_gb + ' GB — will not fit (available ' + free.toFixed(0) + ' GB, swap frees ~' + (S.gpu_ram || 0).toFixed(0) + ' GB)'
+            : '✗ needs ~' + e.need_gb + ' GB — will not fit (available ' + free.toFixed(0) + ' GB)';
         } else if (margin < 6) {
           cls = 'warn';
           txt = '▲ needs ~' + e.need_gb + ' GB — tight, ~' + margin.toFixed(0) + ' GB left';
