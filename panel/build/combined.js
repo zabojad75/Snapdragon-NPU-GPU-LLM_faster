@@ -54,11 +54,22 @@ async function poll() {
   else if (n.state === 'crashed') npuLabel = 'CRASHED';
   chip($('npuChip'), n.state, npuLabel);
   
+  // mirror the GPU/NPU card chips into the top bar (same data, no extra fetches)
+  for (const [src, dst] of [['gpuChip','gpuTopChip'],['npuChip','npuTopChip']]) {
+    const s = $(src), d = $(dst);
+    d.className = s.className;
+    d.textContent = s.textContent;
+  }
+  const hasCtx = !!(g.model && g.ctx);
+  $('gpuTopCtxChip').className = $('gpuCtxChip').className;
+  $('gpuTopCtxChip').textContent = $('gpuCtxChip').textContent;
+  $('gpuTopCtxChip').classList.toggle('empty', !hasCtx);
+  
   $('dWeb').className = 'dot' + (S.webui ? ' on' : ' err');
   
   if (S.ram_free !== null) {
-    $('ramInfo').textContent = 'RAM ' + S.ram_free.toFixed(1) + ' GB free';
-    $('ramFreeText').textContent = 'RAM ' + S.ram_free.toFixed(1) + ' GB free';
+    $('ramInfo').textContent = S.ram_free.toFixed(1) + ' GB';
+    $('ramFreeText').textContent = S.ram_free.toFixed(1) + ' GB';
     const ramPercent = Math.min(100, S.ram_free/48*100);
     $('ramBarMiniFill').style.width = ramPercent + '%';
     $('ramBarFill').style.width = ramPercent + '%';
@@ -157,12 +168,23 @@ function switchView(view) {
   if (view === 'chat') {
     $('view-chat').classList.remove('hidden');
     $('view-dash').classList.add('hidden');
+    $('view-mail').classList.add('hidden');
     $('btnChat').classList.add('active');
+    $('btnMail').classList.remove('active');
+    $('btnDash').classList.remove('active');
+  } else if (view === 'mail') {
+    $('view-chat').classList.add('hidden');
+    $('view-dash').classList.add('hidden');
+    $('view-mail').classList.remove('hidden');
+    $('btnChat').classList.remove('active');
+    $('btnMail').classList.add('active');
     $('btnDash').classList.remove('active');
   } else {
     $('view-chat').classList.add('hidden');
     $('view-dash').classList.remove('hidden');
+    $('view-mail').classList.add('hidden');
     $('btnChat').classList.remove('active');
+    $('btnMail').classList.remove('active');
     $('btnDash').classList.add('active');
   }
 }
@@ -174,6 +196,7 @@ function saveSel() {
 
 $('themeBtn').addEventListener('click', toggleTheme);
 $('btnChat').addEventListener('click', () => switchView('chat'));
+$('btnMail').addEventListener('click', () => switchView('mail'));
 $('btnDash').addEventListener('click', () => switchView('dash'));
 $('model').addEventListener('change', saveSel);
 $('ctx').addEventListener('change', () => ctxChanged());
@@ -432,7 +455,17 @@ function renderModelsList() {
   }
 }
 
+function renderJobsCounters() {
+  const c = S.jobs_llm || {};
+  const done = (c.done || 0) + (c.error || 0) + (c.refused || 0) + (c.aborted || 0);
+  $('jobsCounters').innerHTML =
+    `<span class="cnt ok" title="ok ${c.done || 0} · error ${c.error || 0} · refused ${c.refused || 0} · aborted ${c.aborted || 0}">done ${done}</span>` +
+    `<span class="cnt act" title="in flight now">processed ${c.running || 0}</span>` +
+    `<span class="cnt dim" title="queued for later">planned ${c.pending || 0}</span>`;
+}
+
 function renderJobs() {
+  renderJobsCounters();
   if (S.jobs.length === 0) {
     $('jobsList').innerHTML = '<span class="label">none yet</span>';
     return;
@@ -441,7 +474,7 @@ function renderJobs() {
   const jobElements = S.jobs.map(job => {
     const header = `<div class="job-header"><b>${esc(job.label)}</b> — ${esc(job.status)} (${job.elapsed}s)</div>`;
     const logLine = job.log && job.log.length ? `<pre>${esc(job.log.slice(-2).join('\n'))}</pre>` : '';
-    const cancelButton = job.status === 'running' ? `<button class="btn sm job-cancel" data-id="${job.id}">cancel</button>` : '';
+    const cancelButton = (job.status === 'running' && job.kind !== 'llm') ? `<button class="btn sm job-cancel" data-id="${job.id}">cancel</button>` : '';
     return `<div class="job ${job.status}">${header}${logLine}${cancelButton}</div>`;
   }).join('');
 

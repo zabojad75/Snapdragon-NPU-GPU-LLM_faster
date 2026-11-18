@@ -21,6 +21,7 @@
   --code-bg: #0B1220;
   --code-txt: #9FB4D8;
   --shadow: 0 8px 24px rgba(0,0,0,.35);
+  --appbar-h: 56px;
 }
 
 [data-theme="light"] {
@@ -46,6 +47,10 @@
   margin: 0;
 }
 
+html, body {
+  height: 100%;
+}
+
 body {
   font-family: "Segoe UI", system-ui, sans-serif;
   font-size: 15px;
@@ -53,7 +58,7 @@ body {
   background: var(--bg);
   color: var(--txt);
   transition: background-color 150ms, color 150ms;
-  overflow-x: hidden;
+  overflow: hidden;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -69,14 +74,16 @@ body {
 .appbar {
   position: sticky;
   top: 0;
+  z-index: 10;
   display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
   align-items: center;
-  gap: 12px;
-  padding: 10px 16px;
+  gap: 10px;
+  min-height: var(--appbar-h);
+  padding: 0 16px;
   background: var(--panel);
   border-bottom: 1px solid var(--line);
-  z-index: 10;
-  flex-wrap: wrap;
 }
 
 .brand {
@@ -84,12 +91,13 @@ body {
   align-items: center;
   gap: 8px;
   font-weight: 700;
-  letter-spacing: -0.02em;
   color: var(--acc);
+  white-space: nowrap;
 }
 
 .viewswitch {
   display: inline-flex;
+  flex: 0 0 auto;
   background: var(--panel2);
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -99,16 +107,209 @@ body {
 .viewswitch button {
   background: transparent;
   border: none;
-  padding: 7px 14px;
+  padding: 0 13px;
+  min-height: 36px;
   font-size: 13px;
+  white-space: nowrap;
   cursor: pointer;
   color: var(--txt);
-  min-height: 36px;
 }
 
 .viewswitch button.active {
   background: var(--acc);
   color: var(--on-acc);
+}
+
+.viewswitch button:focus-visible {
+  outline: 2px solid var(--acc);
+  outline-offset: -2px;
+}
+
+.status {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+}
+
+.status-item {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.ram-mini {
+  width: 60px;
+  height: 6px;
+}
+
+.icon-btn {
+  width: 36px;
+  height: 36px;
+  min-height: 36px;
+  padding: 0;
+  display: flex;
+  justify-content: center;
+  flex: none;
+}
+
+.clock {
+  font-variant-numeric: tabular-nums;
+}
+
+#view-chat, #view-mail, #view-dash {
+  height: 100%;
+}
+
+#view-chat iframe, #view-mail iframe {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
+main {
+  height: calc(100vh - var(--appbar-h));
+  height: calc(100dvh - var(--appbar-h));
+  overflow: hidden;
+}
+
+#view-dash {
+  height: 100%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.dash-wrap {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+.dash-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.dash-col {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.col-gpu { grid-column: 1; grid-row: 1; }
+.col-status { grid-column: 2; grid-row: 1; }
+.col-jobs { grid-column: 1; grid-row: 2; }
+.col-tools { grid-column: 2; grid-row: 2; }
+#cardLogs { grid-column: 1 / -1; }
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 16px;
+  box-shadow: var(--shadow);
+  min-width: 0;
+}
+
+.card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.card-title {
+  white-space: nowrap;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+#jobsList {
+  max-height: 320px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  min-height: 0;
+}
+
+.log-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.log-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.log-block pre {
+  max-height: 180px;
+  margin: 0;
+}
+
+.field-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.field-group + .field-group {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+#modelsList, #gwInfo, #npuDetail {
+  overflow-wrap: anywhere;
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 8px 0;
+  flex-wrap: wrap;
+}
+
+.row > .bar {
+  flex: 1 1 80px;
+}
+
+.row input, .row select {
+  min-width: 0;
+}
+
+select,
+input[type=text],
+input[type=number],
+textarea {
+  background: var(--panel2);
+  color: var(--txt);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+  width: 100%;
+}
+
+select:focus,
+input[type=text]:focus,
+input[type=number]:focus,
+textarea:focus {
+  border-color: var(--acc);
+  outline: none;
 }
 
 .btn {
@@ -199,6 +400,31 @@ body {
   font-weight: 700;
 }
 
+.chip.job-counter.done {
+  color: var(--ok);
+  border-color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+}
+
+.chip.job-counter.processed {
+  color: var(--acc);
+  border-color: var(--acc);
+  background: color-mix(in srgb, var(--acc) 12%, transparent);
+}
+
+.chip.job-counter.planned {
+  color: var(--dim);
+  border-color: var(--dim);
+  background: color-mix(in srgb, var(--dim) 12%, transparent);
+}
+
+.job-counters {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+
 .dot {
   width: 9px;
   height: 9px;
@@ -231,84 +457,25 @@ body {
   50% { opacity: .35; }
 }
 
-.card {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 16px;
-  box-shadow: var(--shadow);
-}
-
-.card-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 12px;
-}
-
 .chips {
   display: flex;
   gap: 6px;
   align-items: center;
-}
-
-.card-title {
-  font-weight: 600;
-  font-size: 14px;
-}
-
-.grid {
-  display: grid;
-  gap: 16px;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-}
-
-#cardLogs {
-  grid-column: span 2;
-}
-
-#cardLogs pre {
-  max-height: 360px;
-}
-
-select,
-input[type=text],
-input[type=number],
-textarea {
-  background: var(--panel2);
-  color: var(--txt);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 8px 10px;
-  font-size: 13px;
-  width: 100%;
-}
-
-select:focus,
-input[type=text]:focus,
-input[type=number]:focus,
-textarea:focus {
-  border-color: var(--acc);
-  outline: none;
-}
-
-.row {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  margin: 8px 0;
   flex-wrap: wrap;
 }
 
-.row pre {
-  flex: 1 1 100%;
-  min-width: 0;
+.cnt {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--panel2);
+  color: var(--txt);
+  white-space: nowrap;
 }
-
-.label {
-  font-size: 12px;
-  color: var(--dim);
-}
+.cnt.ok  { border-color: var(--ok); color: var(--ok); }
+.cnt.act { border-color: var(--acc); color: var(--acc); }
+.cnt.dim { opacity: .7; }
 
 .bar {
   height: 8px;
@@ -350,11 +517,21 @@ pre {
 
 .job.done { border-color: var(--ok); }
 .job.error { border-color: var(--err); }
+.job.refused { border-color: var(--warn); }
+.job.queued { border-color: var(--warn); border-left-style: dashed; }
+.job.aborted { border-color: var(--dim); opacity: .72; }
 
 .job-header {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
+  overflow-wrap: anywhere;
+}
+
+.label {
+  font-size: 12px;
+  color: var(--dim);
 }
 
 #toast {
@@ -367,47 +544,126 @@ pre {
   border-radius: 8px;
   padding: 12px 16px;
   font-size: 13px;
-  max-width: 420px;
+  max-width: min(420px, calc(100vw - 32px));
   display: none;
   z-index: 99;
   box-shadow: var(--shadow);
 }
 
-#view-chat {
-  height: calc(100vh - 60px);
-  display: flex;
-  flex-direction: column;
-}
-
-#view-chat iframe {
-  width: 100%;
-  height: 100%;
-  border: none;
-}
-
-#view-dash {
-  padding: 20px;
-  max-width: 1400px;
-  margin: auto;
-  overflow-y: auto;
-}
-
 .hidden { display: none !important; }
 .grow { flex: 1; }
-
-.mono {
-  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
-}
 
 .ok { color: var(--ok); }
 .warn { color: var(--warn); }
 .err { color: var(--err); }
 
-@media (max-width: 640px) {
-  .grid { grid-template-columns: 1fr; }
-  #cardLogs { grid-column: auto; }
+/* Responsive */
+
+@media (max-width: 980px) {
+  .dash-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    align-items: stretch;
+  }
+  .dash-col {
+    display: contents;
+  }
+  .dash-wrap {
+    padding: 14px;
+  }
+  #jobsList {
+    max-height: 260px;
+  }
 }
 
+@media (max-width: 860px) {
+  .log-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .appbar {
+    padding: 0 12px;
+    gap: 8px;
+  }
+  .brand-name {
+    display: none;
+  }
+  .clock {
+    display: none;
+  }
+  .webui-label {
+    display: none;
+  }
+  .viewswitch button {
+    min-height: 44px;
+    padding: 0 10px;
+  }
+  .icon-btn {
+    width: 44px;
+    height: 44px;
+    min-height: 44px;
+  }
+  .ram-mini {
+    width: 48px;
+  }
+}
+
+@media (max-width: 420px) {
+  .ram-mini {
+    display: none;
+  }
+  .viewswitch button {
+    padding: 0 8px;
+    font-size: 12.5px;
+  }
+}
+
+@media (max-width: 360px) {
+  .brand {
+    display: none;
+  }
+  .appbar {
+    padding: 0 8px;
+    gap: 6px;
+  }
+  .viewswitch button {
+    padding: 0 6px;
+    font-size: 12px;
+  }
+}
+
+/* Keep .grid harmless */
+.grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+}
+#model { flex: 1 1 100%; }
+#ctx { flex: 0 0 170px; width: 170px; }
+#ctxHint { flex: 1 1 240px; }
+.row > input[type="text"] { flex: 1 1 220px; width: auto; }
+#qModel, #qTarget { flex: 1 1 150px; width: auto; }
+.ram-mini { border: 1px solid var(--line-strong); }
+@media (max-width: 720px) {
+  #ctx { flex: 0 1 150px; width: 150px; }
+}
+@media (max-width: 420px) {
+  #qModel, #qTarget { flex: 1 1 130px; }
+}
+
+/* top-bar GPU/NPU mirrors */
+#gpuTopCtxChip.empty { display: none; }
+
+@media (max-width: 1280px) {
+  #gpuTopCtxChip { display: none; }
+}
+
+@media (max-width: 1080px) {
+  .top-gpu, .top-npu { display: none; }
+}
 </style>
 </head>
 <body>
@@ -416,155 +672,191 @@ pre {
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">
       <path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/>
     </svg>
-    llmnpu
+    <span class="brand-name">llmnpu</span>
   </span>
-  <nav class="viewswitch">
-    <button id="btnChat" class="active">Chat</button>
-    <button id="btnDash">Dashboard</button>
+  <nav class="viewswitch" aria-label="Views">
+    <button type="button" id="btnChat" class="active">Chat</button>
+    <button type="button" id="btnMail">Mail</button>
+    <button type="button" id="btnDash">Dashboard</button>
   </nav>
-  <span class="grow"></span>
-  <span class="label">RAM</span>
-  <span class="bar" id="ramBarMini" style="width:110px"><div id="ramBarMiniFill"></div></span>
-  <span class="mono" id="ramInfo">–</span>
-  <span class="label"><span class="dot" id="dWeb"></span>WebUI</span>
-  <button class="btn ghost" id="themeBtn" aria-label="Toggle theme" title="Toggle theme">
-    <svg id="iconSun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-      <circle cx="12" cy="12" r="5"/>
-      <line x1="12" y1="1" x2="12" y2="3"/>
-      <line x1="12" y1="21" x2="12" y2="23"/>
-      <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
-      <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
-      <line x1="1" y1="12" x2="3" y2="12"/>
-      <line x1="21" y1="12" x2="23" y2="12"/>
-      <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
-      <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
-    </svg>
-    <svg id="iconMoon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-      <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
-    </svg>
-  </button>
-  <span class="mono" id="clock">–</span>
+  <div class="status">
+    <span class="status-item ram" title="Available RAM">
+      <span class="status-label">RAM</span>
+      <span class="bar ram-mini" id="ramBarMini"><div id="ramBarMiniFill"></div></span>
+      <span class="mono" id="ramInfo">–</span>
+    </span>
+    <span class="status-item" title="Open WebUI">
+      <span class="dot" id="dWeb"></span>
+      <span class="status-label webui-label">WebUI</span>
+    </span>
+    <span class="status-item top-gpu" title="GPU server">
+      <span class="status-label">GPU</span>
+      <span class="chip" id="gpuTopChip">–</span>
+      <span class="chip empty" id="gpuTopCtxChip" title="loaded context">–</span>
+    </span>
+    <span class="status-item top-npu" title="NPU server">
+      <span class="status-label">NPU</span>
+      <span class="chip" id="npuTopChip">–</span>
+    </span>
+    <button class="btn ghost icon-btn" id="themeBtn" aria-label="Toggle theme" title="Toggle theme">
+      <svg id="iconSun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+        <circle cx="12" cy="12" r="5"/>
+        <line x1="12" y1="1" x2="12" y2="3"/>
+        <line x1="12" y1="21" x2="12" y2="23"/>
+        <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
+        <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+        <line x1="1" y1="12" x2="3" y2="12"/>
+        <line x1="21" y1="12" x2="23" y2="12"/>
+        <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
+        <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+      </svg>
+      <svg id="iconMoon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+      </svg>
+    </button>
+    <span class="mono clock" id="clock">–</span>
+  </div>
 </header>
 <main>
   <section id="view-chat">
     <iframe id="webui" src="/" title="Open WebUI"></iframe>
   </section>
+  <section id="view-mail" class="hidden">
+    <iframe id="mailui" src="http://localhost:8090" title="Mail Assistant"></iframe>
+  </section>
   <section id="view-dash" class="hidden">
-    <div class="grid">
-      <div class="card" id="cardGpu">
-        <div class="card-head">
-          <span class="card-title">GPU · Adreno</span>
-          <span class="chips">
-            <span class="chip" id="gpuChip">–</span>
-            <span class="chip" id="gpuCtxChip" title="loaded context">–</span>
-          </span>
+    <div class="dash-wrap">
+      <div class="dash-grid">
+        <div class="dash-col col-gpu">
+          <div class="card" id="cardGpu">
+            <div class="card-head">
+              <span class="card-title">GPU · Adreno</span>
+              <span class="chips">
+                <span class="chip" id="gpuChip">–</span>
+                <span class="chip" id="gpuCtxChip" title="loaded context">–</span>
+              </span>
+            </div>
+            <div class="row">
+              <select id="model" class="mono"></select>
+            </div>
+            <div class="row">
+              <span class="label">context</span>
+              <select id="ctx">
+                <option value="4096">4096</option>
+                <option value="8192">8192</option>
+                <option value="16384" selected>16384</option>
+                <option value="24576">24576</option>
+                <option value="32768">32768</option>
+                <option value="65536">65536</option>
+              </select>
+              <span class="label" id="ctxHint"></span>
+            </div>
+            <div class="row">
+              <button type="button" id="btnStart" class="btn primary">Start</button>
+              <button type="button" id="btnGpuRestart" class="btn">Restart</button>
+              <button type="button" id="btnStop" class="btn danger">Stop</button>
+              <button type="button" id="btnDel" class="btn danger">Delete</button>
+            </div>
+          </div>
         </div>
-        <div class="row">
-          <select id="model" class="mono"></select>
+        <div class="dash-col col-status">
+          <div class="card" id="cardNpu">
+            <div class="card-head">
+              <span class="card-title">NPU · Hexagon</span>
+              <span class="chip" id="npuChip">–</span>
+            </div>
+            <div class="row">
+              <button type="button" id="btnNpuStart" class="btn primary">Start</button>
+              <button type="button" id="btnNpuRestart" class="btn">Restart</button>
+              <button type="button" id="btnNpuStop" class="btn danger">Stop</button>
+            </div>
+            <div class="label mono" id="npuDetail">–</div>
+          </div>
+          <div class="card" id="cardSys">
+            <div class="card-head">
+              <span class="card-title">System</span>
+            </div>
+            <div class="row">
+              <span class="label">RAM free</span>
+              <div class="bar" id="ramBar"><div id="ramBarFill"></div></div>
+              <div class="label mono" id="ramFreeText">–</div>
+            </div>
+            <div class="label mono" id="gwInfo">–</div>
+          </div>
         </div>
-        <div class="row">
-          <span class="label">context</span>
-          <select id="ctx">
-            <option value="4096">4096</option>
-            <option value="8192">8192</option>
-            <option value="16384" selected>16384</option>
-            <option value="24576">24576</option>
-            <option value="32768">32768</option>
-            <option value="65536">65536</option>
-          </select>
-          <span class="label" id="ctxHint"></span>
+        <div class="dash-col col-jobs">
+          <div class="card" id="cardJobs">
+            <div class="card-head">
+              <span class="card-title">Jobs</span>
+              <span class="chips" id="jobsCounters"></span>
+            </div>
+            <div id="jobsList"><span class="label">none yet</span></div>
+          </div>
         </div>
-        <div class="row">
-          <button id="btnStart" class="btn primary">Start</button>
-          <button id="btnGpuRestart" class="btn">Restart</button>
-          <button id="btnStop" class="btn danger">Stop</button>
-          <button id="btnDel" class="btn danger">Delete</button>
+        <div class="dash-col col-tools">
+          <div class="card" id="cardDl">
+            <div class="card-head">
+              <span class="card-title">Download GGUF</span>
+            </div>
+            <div class="row">
+              <input type="text" id="dlUrl" placeholder="https://huggingface.co/.../model-Q4_K_M.gguf">
+              <button type="button" class="btn primary" id="btnDl">Download</button>
+            </div>
+            <div class="field-group">
+              <span class="label">On disk</span>
+              <div id="modelsList" class="label mono"></div>
+            </div>
+          </div>
+          <div class="card" id="cardAdapt">
+            <div class="card-head">
+              <span class="card-title">Adapt</span>
+            </div>
+            <div class="field-group">
+              <div class="row">
+                <span class="label">Re-quantize a GGUF (llama-quantize)</span>
+              </div>
+              <div class="row">
+                <select id="qModel"></select>
+                <span class="label">→</span>
+                <select id="qTarget"></select>
+                <button type="button" class="btn primary" id="btnQuantize">Quantize</button>
+              </div>
+            </div>
+            <div class="field-group">
+              <div class="row">
+                <span class="label">Pull a Hexagon-compiled model (geniex)</span>
+              </div>
+              <div class="row">
+                <input type="text" id="npRepo" placeholder="qualcomm/Qwen3-8B:W4A16">
+                <button type="button" class="btn primary" id="btnNpuPull">Pull</button>
+              </div>
+            </div>
+          </div>
         </div>
-      </div>
-      <div class="card" id="cardNpu">
-        <div class="card-head">
-          <span class="card-title">NPU · Hexagon</span>
-          <span class="chip" id="npuChip">–</span>
-        </div>
-        <div class="row">
-          <button id="btnNpuStart" class="btn primary">Start</button>
-          <button id="btnNpuRestart" class="btn">Restart</button>
-          <button id="btnNpuStop" class="btn danger">Stop</button>
-        </div>
-        <div class="label mono" id="npuDetail">–</div>
-      </div>
-      <div class="card" id="cardSys">
-        <div class="card-head">
-          <span class="card-title">System</span>
-        </div>
-        <div class="row">
-          <span class="label">RAM free</span>
-          <div class="bar" id="ramBar"><div id="ramBarFill"></div></div>
-          <div class="label mono" id="ramFreeText">–</div>
-        </div>
-        <div class="label mono" id="gwInfo">–</div>
-      </div>
-      <div class="card" id="cardJobs">
-        <div class="card-head">
-          <span class="card-title">Jobs</span>
-        </div>
-        <div id="jobsList"><span class="label">none yet</span></div>
-      </div>
-      <div class="card" id="cardDl">
-        <div class="card-head">
-          <span class="card-title">Download GGUF</span>
-        </div>
-        <div class="row">
-          <input type="text" id="dlUrl" placeholder="https://huggingface.co/.../model-Q4_K_M.gguf">
-          <button class="btn primary" id="btnDl">Download</button>
-        </div>
-        <div class="row">
-          <span class="label">On disk</span>
-          <div id="modelsList" class="label mono"></div>
-        </div>
-      </div>
-      <div class="card" id="cardAdapt">
-        <div class="card-head">
-          <span class="card-title">Adapt</span>
-        </div>
-        <div class="row">
-          <span class="label">Re-quantize a GGUF (llama-quantize)</span>
-        </div>
-        <div class="row">
-          <select id="qModel"></select>
-          <span class="label">→</span>
-          <select id="qTarget"></select>
-          <button class="btn primary" id="btnQuantize">Quantize</button>
-        </div>
-        <div class="row">
-          <span class="label">Pull a Hexagon-compiled model (geniex)</span>
-        </div>
-        <div class="row">
-          <input type="text" id="npRepo" placeholder="qualcomm/Qwen3-8B:W4A16">
-          <button class="btn primary" id="btnNpuPull">Pull</button>
-        </div>
-      </div>
-      <div class="card" id="cardLogs">
-        <div class="card-head">
-          <span class="card-title">Logs & context budget</span>
-        </div>
-        <div class="row">
-          <span class="label">GPU</span>
-          <pre id="gpuLog"></pre>
-        </div>
-        <div class="row">
-          <span class="label">NPU</span>
-          <pre id="npuLog"></pre>
-        </div>
-        <div class="row">
-          <span class="label">Context budget check (NPU 4K · GPU selected ctx)</span>
-        </div>
-        <div class="row">
-          <textarea id="budgetText" placeholder="paste your task text here…"></textarea>
-        </div>
-        <div class="row">
-          <button class="btn primary" id="btnBudget">Check</button>
-          <span class="label" id="budgetOut">estimate tokens (≈ chars ÷ 4)</span>
+        <div class="card" id="cardLogs">
+          <div class="card-head">
+            <span class="card-title">Logs & context budget</span>
+          </div>
+          <div class="log-grid">
+            <div class="log-block">
+              <span class="label">GPU</span>
+              <pre id="gpuLog"></pre>
+            </div>
+            <div class="log-block">
+              <span class="label">NPU</span>
+              <pre id="npuLog"></pre>
+            </div>
+          </div>
+          <div class="row">
+            <span class="label">Context budget check (NPU 4K · GPU selected ctx)</span>
+          </div>
+          <div class="row">
+            <textarea id="budgetText" placeholder="paste your task text here…"></textarea>
+          </div>
+          <div class="row">
+            <button type="button" class="btn primary" id="btnBudget">Check</button>
+            <span class="label" id="budgetOut">estimate tokens (≈ chars ÷ 4)</span>
+          </div>
         </div>
       </div>
     </div>
@@ -629,11 +921,22 @@ async function poll() {
   else if (n.state === 'crashed') npuLabel = 'CRASHED';
   chip($('npuChip'), n.state, npuLabel);
   
+  // mirror the GPU/NPU card chips into the top bar (same data, no extra fetches)
+  for (const [src, dst] of [['gpuChip','gpuTopChip'],['npuChip','npuTopChip']]) {
+    const s = $(src), d = $(dst);
+    d.className = s.className;
+    d.textContent = s.textContent;
+  }
+  const hasCtx = !!(g.model && g.ctx);
+  $('gpuTopCtxChip').className = $('gpuCtxChip').className;
+  $('gpuTopCtxChip').textContent = $('gpuCtxChip').textContent;
+  $('gpuTopCtxChip').classList.toggle('empty', !hasCtx);
+  
   $('dWeb').className = 'dot' + (S.webui ? ' on' : ' err');
   
   if (S.ram_free !== null) {
-    $('ramInfo').textContent = 'RAM ' + S.ram_free.toFixed(1) + ' GB free';
-    $('ramFreeText').textContent = 'RAM ' + S.ram_free.toFixed(1) + ' GB free';
+    $('ramInfo').textContent = S.ram_free.toFixed(1) + ' GB';
+    $('ramFreeText').textContent = S.ram_free.toFixed(1) + ' GB';
     const ramPercent = Math.min(100, S.ram_free/48*100);
     $('ramBarMiniFill').style.width = ramPercent + '%';
     $('ramBarFill').style.width = ramPercent + '%';
@@ -732,12 +1035,23 @@ function switchView(view) {
   if (view === 'chat') {
     $('view-chat').classList.remove('hidden');
     $('view-dash').classList.add('hidden');
+    $('view-mail').classList.add('hidden');
     $('btnChat').classList.add('active');
+    $('btnMail').classList.remove('active');
+    $('btnDash').classList.remove('active');
+  } else if (view === 'mail') {
+    $('view-chat').classList.add('hidden');
+    $('view-dash').classList.add('hidden');
+    $('view-mail').classList.remove('hidden');
+    $('btnChat').classList.remove('active');
+    $('btnMail').classList.add('active');
     $('btnDash').classList.remove('active');
   } else {
     $('view-chat').classList.add('hidden');
     $('view-dash').classList.remove('hidden');
+    $('view-mail').classList.add('hidden');
     $('btnChat').classList.remove('active');
+    $('btnMail').classList.remove('active');
     $('btnDash').classList.add('active');
   }
 }
@@ -749,6 +1063,7 @@ function saveSel() {
 
 $('themeBtn').addEventListener('click', toggleTheme);
 $('btnChat').addEventListener('click', () => switchView('chat'));
+$('btnMail').addEventListener('click', () => switchView('mail'));
 $('btnDash').addEventListener('click', () => switchView('dash'));
 $('model').addEventListener('change', saveSel);
 $('ctx').addEventListener('change', () => ctxChanged());
@@ -1007,7 +1322,17 @@ function renderModelsList() {
   }
 }
 
+function renderJobsCounters() {
+  const c = S.jobs_llm || {};
+  const done = (c.done || 0) + (c.error || 0) + (c.refused || 0) + (c.aborted || 0);
+  $('jobsCounters').innerHTML =
+    `<span class="cnt ok" title="ok ${c.done || 0} · error ${c.error || 0} · refused ${c.refused || 0} · aborted ${c.aborted || 0}">done ${done}</span>` +
+    `<span class="cnt act" title="in flight now">processed ${c.running || 0}</span>` +
+    `<span class="cnt dim" title="queued for later">planned ${c.pending || 0}</span>`;
+}
+
 function renderJobs() {
+  renderJobsCounters();
   if (S.jobs.length === 0) {
     $('jobsList').innerHTML = '<span class="label">none yet</span>';
     return;
@@ -1016,7 +1341,7 @@ function renderJobs() {
   const jobElements = S.jobs.map(job => {
     const header = `<div class="job-header"><b>${esc(job.label)}</b> — ${esc(job.status)} (${job.elapsed}s)</div>`;
     const logLine = job.log && job.log.length ? `<pre>${esc(job.log.slice(-2).join('\n'))}</pre>` : '';
-    const cancelButton = job.status === 'running' ? `<button class="btn sm job-cancel" data-id="${job.id}">cancel</button>` : '';
+    const cancelButton = (job.status === 'running' && job.kind !== 'llm') ? `<button class="btn sm job-cancel" data-id="${job.id}">cancel</button>` : '';
     return `<div class="job ${job.status}">${header}${logLine}${cancelButton}</div>`;
   }).join('');
 

@@ -54,11 +54,22 @@ async function poll() {
   else if (n.state === 'crashed') npuLabel = 'CRASHED';
   chip($('npuChip'), n.state, npuLabel);
   
+  // mirror the GPU/NPU card chips into the top bar (same data, no extra fetches)
+  for (const [src, dst] of [['gpuChip','gpuTopChip'],['npuChip','npuTopChip']]) {
+    const s = $(src), d = $(dst);
+    d.className = s.className;
+    d.textContent = s.textContent;
+  }
+  const hasCtx = !!(g.model && g.ctx);
+  $('gpuTopCtxChip').className = $('gpuCtxChip').className;
+  $('gpuTopCtxChip').textContent = $('gpuCtxChip').textContent;
+  $('gpuTopCtxChip').classList.toggle('empty', !hasCtx);
+  
   $('dWeb').className = 'dot' + (S.webui ? ' on' : ' err');
   
   if (S.ram_free !== null) {
-    $('ramInfo').textContent = 'RAM ' + S.ram_free.toFixed(1) + ' GB free';
-    $('ramFreeText').textContent = 'RAM ' + S.ram_free.toFixed(1) + ' GB free';
+    $('ramInfo').textContent = S.ram_free.toFixed(1) + ' GB';
+    $('ramFreeText').textContent = S.ram_free.toFixed(1) + ' GB';
     const ramPercent = Math.min(100, S.ram_free/48*100);
     $('ramBarMiniFill').style.width = ramPercent + '%';
     $('ramBarFill').style.width = ramPercent + '%';
@@ -157,12 +168,23 @@ function switchView(view) {
   if (view === 'chat') {
     $('view-chat').classList.remove('hidden');
     $('view-dash').classList.add('hidden');
+    $('view-mail').classList.add('hidden');
     $('btnChat').classList.add('active');
+    $('btnMail').classList.remove('active');
+    $('btnDash').classList.remove('active');
+  } else if (view === 'mail') {
+    $('view-chat').classList.add('hidden');
+    $('view-dash').classList.add('hidden');
+    $('view-mail').classList.remove('hidden');
+    $('btnChat').classList.remove('active');
+    $('btnMail').classList.add('active');
     $('btnDash').classList.remove('active');
   } else {
     $('view-chat').classList.add('hidden');
     $('view-dash').classList.remove('hidden');
+    $('view-mail').classList.add('hidden');
     $('btnChat').classList.remove('active');
+    $('btnMail').classList.remove('active');
     $('btnDash').classList.add('active');
   }
 }
@@ -174,6 +196,7 @@ function saveSel() {
 
 $('themeBtn').addEventListener('click', toggleTheme);
 $('btnChat').addEventListener('click', () => switchView('chat'));
+$('btnMail').addEventListener('click', () => switchView('mail'));
 $('btnDash').addEventListener('click', () => switchView('dash'));
 $('model').addEventListener('change', saveSel);
 $('ctx').addEventListener('change', () => ctxChanged());
