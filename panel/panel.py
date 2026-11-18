@@ -14,7 +14,7 @@ a custom header without a CORS preflight, which the panel never grants — so a
 web page cannot start servers, download files or delete models. User input
 that reaches a cmd.exe command line (model file, alias) is allowlist-validated.
 """
-import json, os, re, struct, subprocess, threading, time
+import json, os, re, socket, struct, subprocess, threading, time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
@@ -66,6 +66,7 @@ EXPECTED_FILE = MODELS / ".expected.json"
 PORT      = int(os.environ.get("LLMNPU_PANEL_PORT", "8188"))
 GPU_PORT, NPU_PORT, WEBUI_PORT = 8081, 18181, 3000
 GATEWAY   = os.popen("ip route show default | awk '{print $3}'").read().strip()
+DECIDE_PORT = 18182   # GenieX v0.11 decision server (Liquid d1 on the NPU)
 
 # llama-server tuning for Snapdragon X2 Elite + Adreno, measured 2026-09-17
 # (docs/BENCHMARKS.md, "Server tuning"):
@@ -86,7 +87,13 @@ GPU_MODEL_ARGS = [
 
 def model_args(model_file: str) -> str:
     name = model_file.lower()
-    return " ".join(a for prefix, a in GPU_MODEL_ARGS if name.startswith(prefix))
+    args = [a for prefix, a in GPU_MODEL_ARGS if name.startswith(prefix)]
+    if name.startswith("devstral"):
+        # Devstral's stock template rejects agent conversations that don't
+        # strictly alternate user/assistant (breaks Vibe/OpenCode). Use the
+        # patched copy shipped next to the model. Trusted internal path only.
+        args.append(f'--chat-template-file "{to_win(MODELS / "devstral-chat-template.jinja")}"')
+    return " ".join(args)
 
 CMD = "/mnt/c/Windows/System32/cmd.exe"
 POWERSHELL = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
@@ -271,6 +278,128 @@ def _job_running(kind):
     with JOBS_LOCK:
         return any(j.kind == kind and j.status == "running" for j in JOBS.values())
 
+# ---------------------------------------------------------------- LLM job ledger
+# The mail-assistant gateway (:8080) writes one entry per routed LLM task to
+# ~/llmnpu/run/jobs.json. Surface it in the same Jobs card: running entries
+# first ("to do"), then the most recent finished ones.
+LLM_JOBS_FILE = WSL / "run" / "jobs.json"
+_LLM_STATUSES = ("done", "error", "refused", "aborted", "running", "queued")
+_ARCH_CACHE = {"stamp": 0.0, "mark": (), "counts": None}
+_ARCH_LOCK = threading.Lock()
+
+def _llm_jobs(limit=8):
+    try:
+        data = json.loads(LLM_JOBS_FILE.read_text())
+    except Exception:
+        return []
+    jobs = data.get("jobs", [])
+    active = sorted((j for j in jobs if j.get("status") in ("running", "queued")),
+                    key=lambda j: j.get("ts", 0))
+    finished = [j for j in jobs if j.get("status") not in ("running", "queued")]
+    out = []
+    now = time.time()
+    for j in active + list(reversed(finished))[:limit]:
+        status = j.get("status", "done")
+        dur = j.get("duration")
+        detail = j.get("detail", "")
+        if status == "queued" or dur is None:
+            elapsed = now - j.get("ts", now)
+        else:
+            elapsed = dur
+        # a running job that had to wait shows it: "waited 12.3s · ~732 tok …"
+        line = detail
+        if status == "running" and j.get("wait"):
+            line = f"waited {j['wait']}s · {detail}" if detail else f"waited {j['wait']}s"
+        out.append({
+            "id": f"llm{j.get('id')}",
+            "kind": "llm",
+            "label": f"LLM · {j.get('model')} → {j.get('decision')}",
+            "status": status if status in ("queued", "running", "refused",
+                                            "error", "aborted")
+                      else "done",
+            "elapsed": int(elapsed),
+            "result": detail,
+            "log": [line] if line else [],
+        })
+    return out
+
+
+def _archive_counts():
+    """Terminal job counts over every archived daily JSONL (cached ~30 s).
+
+    jobs.json keeps only the last 100 entries; the gateway's archive is
+    append-only, so this is what makes the Jobs card counters meaningful over
+    months instead of minutes.
+    """
+    try:
+        paths = sorted(LLM_JOBS_FILE.parent.glob("jobs-*.jsonl"))
+    except OSError:
+        paths = []
+    try:
+        mark = tuple((p.name, p.stat().st_mtime) for p in paths)
+    except OSError:
+        mark = ()
+    now = time.time()
+    with _ARCH_LOCK:
+        if (_ARCH_CACHE["counts"] is not None and _ARCH_CACHE["mark"] == mark
+                and now - _ARCH_CACHE["stamp"] < 30):
+            return dict(_ARCH_CACHE["counts"])
+    cnt = {s: 0 for s in _LLM_STATUSES}
+    for path in paths:
+        try:
+            lines = path.read_text().splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            try:
+                status = json.loads(line).get("status", "error")
+            except Exception:
+                continue
+            if status in cnt:
+                cnt[status] += 1
+    with _ARCH_LOCK:
+        _ARCH_CACHE.update(stamp=now, mark=mark, counts=dict(cnt))
+    return cnt
+
+
+def _llm_counts():
+    """Job counters for the Jobs card: archive totals + live in-flight jobs.
+
+    Finished jobs are counted from the append-only archive (and only once —
+    jobs.json repeats them); queued/running are counted from the live ledger.
+    """
+    try:
+        jobs = json.loads(LLM_JOBS_FILE.read_text()).get("jobs", [])
+    except Exception:
+        jobs = []
+    cnt = {s: 0 for s in _LLM_STATUSES}
+    for j in jobs:
+        s = j.get("status", "error")
+        if s in ("queued", "running"):
+            cnt[s] += 1
+    arch = _archive_counts()
+    for s in ("done", "error", "refused", "aborted"):
+        cnt[s] += arch.get(s, 0)
+    cnt["pending"] = cnt["queued"]    # waiting for the GPU (gateway queues now)
+    cnt["total"] = sum(cnt[s] for s in _LLM_STATUSES)
+    return cnt
+
+def _epoch_bound(value, default):
+    """Parse an epoch / YYYY-MM-DD / YYYY-MM-DDTHH:MM bound for job history."""
+    if not value:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        pass
+    for fmt in ("%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            return time.mktime(time.strptime(value, fmt))
+        except ValueError:
+            continue
+    raise HTTPException(400, f"bad time '{value}' (use epoch or YYYY-MM-DD)")
+
+
 # ---------------------------------------------------------------- GPU/NPU control
 def _http_ok(url, timeout=3):
     try:
@@ -295,6 +424,56 @@ def gpu_up():
 
 def npu_up():
     return _http_ok(f"http://{GATEWAY}:{NPU_PORT}/v1/models", 2)
+
+_NPU_SCOPE_PS = (
+    "Get-CimInstance Win32_Process -Filter \"Name='geniex.exe'\" | "
+    "Where-Object { $_.CommandLine -match 'llmnpu.geniex.engines' }")
+
+
+def _npu_pids():
+    """PIDs of the panel's bundled NPU server.
+
+    The GenieX decision server (:18182) is also geniex.exe; taskkill /IM would
+    kill both. Match the bundled engine path in the command line instead.
+    """
+    try:
+        out = subprocess.run(
+            [POWERSHELL, "-NoProfile", "-Command",
+             _NPU_SCOPE_PS + " | ForEach-Object { $_.ProcessId }"],
+            capture_output=True, text=True, errors="replace", timeout=10)
+        return [int(x) for x in out.stdout.split() if x.strip().isdigit()]
+    except Exception:
+        return []
+
+
+def _npu_kill_async():
+    def _kill():
+        try:
+            subprocess.run(
+                [POWERSHELL, "-NoProfile", "-Command",
+                 _NPU_SCOPE_PS + " | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"],
+                capture_output=True, text=True, timeout=15)
+        except Exception:
+            pass
+    threading.Thread(target=_kill, daemon=True).start()
+
+
+def _npu_down_wait(timeout=15):
+    try:
+        subprocess.run(
+            [POWERSHELL, "-NoProfile", "-Command",
+             _NPU_SCOPE_PS + " | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"],
+            capture_output=True, text=True, timeout=15)
+    except Exception:
+        pass
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not _npu_pids():
+            time.sleep(0.5)   # let the OS release the socket
+            return True
+        time.sleep(0.5)
+    return False
+
 
 def _taskkill_async(image):
     """taskkill via cmd.exe with hard timeout, in a worker thread (never blocks)."""
@@ -379,6 +558,22 @@ def _launch_npu():
     except Exception as e:
         print("npu start failed:", e, flush=True)
 
+
+def _decide_up():
+    try:
+        with socket.create_connection((GATEWAY, DECIDE_PORT), timeout=1):
+            return True
+    except OSError:
+        return False
+
+
+def _launch_decide():
+    try:
+        subprocess.Popen([CMD, "/c", to_win(win_script("serve_decide.bat"))],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception as e:
+        print("decide start failed:", e, flush=True)
+
 # ---------------------------------------------------------------- state machine
 # A background poller samples health/PID/logs and derives a lifecycle state per
 # server. /api/status reads the cache (instant, no per-request timeouts, no
@@ -461,6 +656,7 @@ def _free_ram_gb():
     Uses PerfCounter AvailableMBytes, not FreePhysicalMemory — weights are mmap'd so
     standby counts as usable when estimating whether a GGUF fits."""
     # Perf counter is the canonical "Available" metric; handle multiple samples + empties
+    # 1) perf counter — canonical "Available", but counter names are locale-dependent
     try:
         out = subprocess.run(
             [POWERSHELL, "-NoProfile", "-Command",
@@ -473,6 +669,19 @@ def _free_ram_gb():
             if v: return v
     except Exception:
         pass
+    # 2) WMI raw class — locale-independent, same Available semantics
+    try:
+        out = subprocess.run(
+            [POWERSHELL, "-NoProfile", "-Command",
+             "[math]::Round((Get-CimInstance Win32_PerfRawData_PerfOS_Memory).AvailableBytes/1GB,1)"],
+            capture_output=True, text=True, timeout=20)
+        txt = out.stdout.strip()
+        if txt:
+            v = float(txt)
+            if v: return v
+    except Exception:
+        pass
+    # 3) last resort: hard free (understates usable RAM; mmap'd weights are reclaimable)
     try:
         out = subprocess.run(
             [POWERSHELL, "-NoProfile", "-Command",
@@ -756,6 +965,10 @@ def _poller():
         gstate, gsince, gdetail = _derive("gpu", gup, gbusy, gmtime, now, gproc)
 
         nup = _http_ok(f"http://{GATEWAY}:{NPU_PORT}/v1/models", 3) if nproc is not False else False
+        if nproc and not nup:
+            # a geniex.exe exists but :18181 is quiet — it may be the decision
+            # server on :18182, so ask which process actually belongs to the panel
+            nproc = bool(_npu_pids())
         nsize, nmtime = _log_info(NPU_LOG)
         nloaded = _npu_loaded() if nup else False
         nbusy = nup and _npu_busy()
@@ -767,7 +980,7 @@ def _poller():
             last_ram = now
             ram_free = _free_ram_gb() or ram_free
 
-        # observed calibration: measure RAM delta across GPU load
+        # observed calibration: measure RAM delta across GPU load -> busy
         global _GPU_OBS_HOLD_GB, _GPU_RAM_BEFORE
         if gup and _GPU_RAM_BEFORE is not None and ram_free is not None and _GPU_OBS_HOLD_GB is None:
             delta = _GPU_RAM_BEFORE - ram_free
@@ -850,6 +1063,9 @@ def status():
     g = c.get("gpu", {}); n = c.get("npu", {})
     return {
         "gpu": {"up": g.get("up", False), "model": g.get("model"),
+                # model_file is the GGUF filename (what the model <select> holds);
+                # "model" above is the served alias the log prints — they differ
+                "model_file": LAST_GPU["model"],
                 "state": g.get("state", "off"), "since": g.get("since", 0),
                 "detail": g.get("detail", ""), "toks": g.get("toks"),
                 "ctx": LAST_GPU["ctx"], "log_tail": g.get("log_tail", [])},
@@ -860,10 +1076,70 @@ def status():
         "ram_free": c.get("ram_free"),
         "gpu_ram": c.get("gpu_ram"),
         "gateway": GATEWAY,
+        "decide_up": _decide_up(),
         "models": c.get("models", []),
-        "jobs": jobs,
+        "jobs": jobs + _llm_jobs(),
+        "jobs_llm": _llm_counts(),
         "now": c.get("now", time.strftime("%H:%M:%S")),
     }
+
+# ---- job history over the daily archives (append-only since 2026-11-16)
+@api.get("/jobs/history")
+def jobs_history(start: str = "", end: str = "", model: str = "", limit: int = 200):
+    """Aggregated job history from the gateway archives.
+
+    start/end accept epoch seconds, YYYY-MM-DD or YYYY-MM-DDTHH:MM (local).
+    Example: /api/jobs/history?start=2026-11-01&model=Qwen
+    """
+    lo = _epoch_bound(start, 0.0)
+    hi = _epoch_bound(end, time.time() + 86400)
+    limit = max(1, min(int(limit or 200), 2000))
+    try:
+        paths = sorted(LLM_JOBS_FILE.parent.glob("jobs-*.jsonl"))
+    except OSError:
+        paths = []
+    rows = []
+    for path in paths:
+        try:
+            lines = path.read_text().splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            try:
+                rec = json.loads(line)
+            except Exception:
+                continue
+            ts = rec.get("ts") or 0
+            if ts < lo or ts > hi:
+                continue
+            if model and model not in str(rec.get("model", "")):
+                continue
+            rows.append(rec)
+    rows.sort(key=lambda r: r.get("ts") or 0, reverse=True)
+    by_model = {}
+    for rec in rows:
+        key = str(rec.get("model", "?"))
+        agg = by_model.setdefault(key, {"jobs": 0, "done": 0, "error": 0,
+                                        "refused": 0, "aborted": 0,
+                                        "busy_s": 0.0, "tokens_out": 0})
+        agg["jobs"] += 1
+        status = rec.get("status", "error")
+        if status in agg:
+            agg[status] += 1
+        try:
+            agg["busy_s"] += float(rec.get("duration") or 0)
+        except (TypeError, ValueError):
+            pass
+        usage = rec.get("usage") or {}
+        try:
+            agg["tokens_out"] += int(usage.get("completion_tokens") or 0)
+        except (TypeError, ValueError):
+            pass
+    for agg in by_model.values():
+        agg["busy_s"] = round(agg["busy_s"], 1)
+        agg["tok_per_s"] = (round(agg["tokens_out"] / agg["busy_s"], 2)
+                            if agg["busy_s"] else None)
+    return {"count": len(rows), "by_model": by_model, "jobs": rows[:limit]}
 
 # ---- ctx RAM estimate: given model + ctx, how much RAM will it need?
 @api.get("/ctx/estimate")
@@ -889,7 +1165,7 @@ def gpu_start(model: str, ctx: int = 16384, alias: str = ""):
     alias = _safe_alias(alias, f.name)
     INTENT["gpu"] = {"action": "start", "model": f.name, "since": time.time()}
     LAST_GPU["model"], LAST_GPU["ctx"] = f.name, ctx
-    # snapshot RAM for observed calibration; poller diffs it when new server appears
+    # snapshot RAM for calibration; poller will diff it when the new server appears
     global _GPU_RAM_BEFORE, _GPU_OBS_HOLD_GB
     with CACHE_LOCK:
         _GPU_RAM_BEFORE = CACHE.get("ram_free")
@@ -951,6 +1227,18 @@ def model_delete(model: str):
     _save_expected(name, None)
     return {"ok": True, "deleted": name}
 
+@api.post("/decide/start", dependencies=write)
+def decide_start():
+    """Start the NPU decision server (:18182, GenieX d1) if it is down.
+
+    The mail judge uses it for the needs_reply/due/urgency verdicts; when it is
+    absent the gateway refuses and the judge falls back to tev1-4b on the GPU.
+    """
+    if _decide_up():
+        return {"ok": True, "already": True}
+    threading.Thread(target=_launch_decide, daemon=True).start()
+    return {"ok": True, "already": False}
+
 @api.post("/npu/start", dependencies=write)
 def npu_start():
     INTENT["npu"] = {"action": "start", "since": time.time()}
@@ -963,7 +1251,7 @@ def npu_start():
 def npu_stop():
     INTENT["npu"] = {"action": "stop", "since": time.time()}
     _bump_action("npu")
-    _taskkill_async("geniex.exe")
+    _npu_kill_async()
     return {"ok": True}
 
 @api.post("/npu/restart", dependencies=write)
@@ -973,7 +1261,7 @@ def npu_restart():
     INTENT["npu"] = {"action": "restart", "since": time.time()}
     my_epoch = _bump_action("npu")
     def _restart():
-        _down_wait("geniex.exe")
+        _npu_down_wait()
         if ACTION_EPOCH["npu"] != my_epoch:
             return   # a newer start/stop/restart superseded this restart
         _launch_npu()
@@ -988,10 +1276,22 @@ def logs(which: str, n: int = 50):
         raise HTTPException(404, "unknown log")
     return {"log": _read_tail(p, 1_000_000)[-max(1, min(n, 2000)):]}
 
+def _gguf_magic(path):
+    """First 4 bytes of a file; GGUF files must start with b"GGUF"."""
+    try:
+        with open(path, "rb") as f:
+            return f.read(4) or None
+    except OSError:
+        return None
+
 # ---- downloads
 @api.post("/download", dependencies=write)
 def download(url: str, name: str = ""):
     url = url.strip()
+    # HF "/blob/" URLs are the web-viewer page — fetching one saves HTML,
+    # not the model. Rewrite to the real file URL so the download works.
+    if "huggingface.co" in url and "/blob/" in url:
+        url = url.replace("/blob/", "/resolve/", 1)
     if not re.match(r"^https?://[^\s\"']+$", url) or ".gguf" not in url.lower():
         raise HTTPException(400, "must be a direct http(s) URL to a .gguf file")
     fname = _safe_model_name(name.strip() or url.split("?")[0].rstrip("/").split("/")[-1])
@@ -1001,6 +1301,10 @@ def download(url: str, name: str = ""):
     if _job_running("download"):
         raise HTTPException(409, "a download is already running")
     part = MODELS / (fname + ".part")
+    # a bogus .part (e.g. the HTML of a /blob/ page) can't be resumed —
+    # drop it so curl starts over on real bytes
+    if part.exists() and _gguf_magic(part) != b"GGUF":
+        part.unlink()
     size = hf_size(url)
     if size:
         _save_expected(fname, size)
@@ -1009,6 +1313,8 @@ def download(url: str, name: str = ""):
         got = part.stat().st_size
         if size and got != size:
             return f"size mismatch {got}/{size} — kept {part.name}"
+        if _gguf_magic(part) != b"GGUF":
+            return f"not a GGUF file ({got} bytes) — kept {part.name}"
         part.rename(final)
         return f"saved {fname}"
 

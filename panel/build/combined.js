@@ -333,12 +333,20 @@ function ctxChanged(force = false) {
       
       const free = (S && S.ram_free != null) ? S.ram_free : null;
       const ctxVal = parseInt(ctx, 10);
-      const alreadyLoaded = S && S.gpu && S.gpu.model && (S.gpu.model === model)
-        && (S.gpu.ctx === ctxVal) && (S.gpu.state === 'ready' || S.gpu.state === 'busy');
+      // gpu.model is the served alias from the log; gpu.model_file is the GGUF filename
+      // that the model select holds — accept either so identity actually matches.
+      const loadedName = S && S.gpu
+        ? (S.gpu.model_file || S.gpu.model || '')
+        : '';
+      const sameModel = loadedName && (loadedName === model
+        || loadedName === model || S.gpu.model === model
+        || (model.startsWith(loadedName) || loadedName.startsWith(model)));
+      const alreadyLoaded = sameModel && S.gpu.ctx === ctxVal
+        && (S.gpu.state === 'ready' || S.gpu.state === 'busy');
       let cls, txt;
       if (alreadyLoaded) {
         cls = 'ok';
-        txt = '✓ loaded — ' + free.toFixed(0) + ' GB available';
+        txt = '✓ loaded' + (free != null ? ' — ' + free.toFixed(0) + ' GB available' : '');
         const options = $('ctx').options;
         for (let i = 0; i < options.length; i++) {
           const v = parseInt(options[i].value, 10);
