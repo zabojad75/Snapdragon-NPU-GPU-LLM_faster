@@ -1200,35 +1200,30 @@ function ctxChanged(force = false) {
       
       const free = (S && S.ram_free != null) ? S.ram_free : null;
       const ctxVal = parseInt(ctx, 10);
+      const gpuHolds = !!(S && S.gpu
+        && (S.gpu.state === 'ready' || S.gpu.state === 'busy'));
+      // RAM usable for this ctx: on a switch the running instance is stopped
+      // first, so its (observed) footprint is added back.
+      const avail = free == null ? null
+        : (gpuHolds ? free + (S.gpu_ram || 0) : free);
       // gpu.model is the served alias from the log; gpu.model_file is the GGUF filename
       // that the model select holds — accept either so identity actually matches.
       const loadedName = S && S.gpu
         ? (S.gpu.model_file || S.gpu.model || '')
         : '';
       const sameModel = loadedName && (loadedName === model
-        || loadedName === model || S.gpu.model === model
-        || (model.startsWith(loadedName) || loadedName.startsWith(model)));
-      const alreadyLoaded = sameModel && S.gpu.ctx === ctxVal
-        && (S.gpu.state === 'ready' || S.gpu.state === 'busy');
+        || S.gpu.model === model
+        || model.startsWith(loadedName) || loadedName.startsWith(model));
+      const alreadyLoaded = sameModel && S.gpu.ctx === ctxVal && gpuHolds;
+
       let cls, txt;
       if (alreadyLoaded) {
         cls = 'ok';
         txt = '✓ loaded' + (free != null ? ' — ' + free.toFixed(0) + ' GB available' : '');
-        const options = $('ctx').options;
-        for (let i = 0; i < options.length; i++) {
-          const v = parseInt(options[i].value, 10);
-          options[i].className = (v === ctxVal) ? 'ok' : '';
-        }
       } else if (free == null) {
         cls = '';
         txt = 'needs ~' + e.need_gb + ' GB';
-        const options = $('ctx').options;
-        for (let i = 0; i < options.length; i++) {
-          options[i].className = '';
-        }
       } else {
-        const gpuHolds = (S.gpu.state === 'ready' || S.gpu.state === 'busy');
-        const avail = gpuHolds ? free + (S.gpu_ram || 0) : free;
         const margin = avail - e.need_gb;
         const freed = gpuHolds && (S.gpu_ram || 0) > 0;
         if (margin < 1.5) {
@@ -1243,29 +1238,25 @@ function ctxChanged(force = false) {
           cls = 'ok';
           txt = '✓ needs ~' + e.need_gb + ' GB — fits';
         }
-        
-        // Apply per-option coloring based on the components from the API
-        if (e.weights_gb != null && e.kv_gb_per_tok != null) {
-          const options = $('ctx').options;
-          const weights_gb = e.weights_gb;
-          const overhead_gb = e.overhead_gb;
-          const kv_gb_per_tok = e.kv_gb_per_tok;
-          
-          for (let i = 0; i < options.length; i++) {
-            const ctxValue = parseInt(options[i].value);
-            const need = weights_gb + overhead_gb + kv_gb_per_tok * ctxValue;
-            const margin = avail - need;
-            
-            if (margin < 1.5) {
-              options[i].className = 'err';
-            } else if (margin < 6) {
-              options[i].className = 'warn';
-            } else {
-              options[i].className = 'ok';
-            }
-          }
-        }
       }
+
+      // One colorizer for the whole list: every option is sized on its own
+      // (weights + overhead + kv*ctx vs avail), so green/orange/red can all
+      // appear at once. Never leave an option class-less: class-less options
+      // inherit the select's colour and the list looks single-coloured.
+      (function paintOptions() {
+        const options = $('ctx').options;
+        const haveParts = e.weights_gb != null && e.kv_gb_per_tok != null;
+        for (let i = 0; i < options.length; i++) {
+          const v = parseInt(options[i].value, 10);
+          if (alreadyLoaded && v === ctxVal) { options[i].className = 'ok'; continue; }
+          if (free == null || !haveParts) { options[i].className = ''; continue; }
+          const need = e.weights_gb + e.overhead_gb + e.kv_gb_per_tok * v;
+          const margin = avail - need;
+          options[i].className = margin < 1.5 ? 'err' : (margin < 6 ? 'warn' : 'ok');
+        }
+      })();
+
       sel.className = cls;
       hint.className = cls;
       hint.textContent = txt;
